@@ -2,13 +2,14 @@ import numpy as np
 from neuron_templates import neuron_type_IZ
 
 class NueronPopulation:
-    def __init__(self, layer_distribution, neuron_distribution, local_distance, layer_distances, neuron_types, n_params=13):
+    def __init__(self, layer_distribution, neuron_distribution, local_distance, layer_distances, neuron_types, inhibitory, n_params=13):
         """
         layer_distribution: list of integers, number of neurons in each layer
         neuron_distribution: list with length layer_distribution of np.arrays of length neuron_types, probabilities of each neuron type in each layer
         local_distance: list of floats of length n_layers, average distance between neurons in the same layer
         layer_distances: matrix of distances between layers, shape (n_layers, n_layers)
         neuron_types: list of neuron types (string), keys for types un neuron_templates.py
+        inhibitory: list of booleans, True if the neuron is inhibitory, False if it is excitatory, shape as neuron_types
         n_params: number of parameters for each neuron, default is 13 (k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V, bias, threshold_mult, threshold_decay)
         """
 
@@ -17,6 +18,7 @@ class NueronPopulation:
         self.local_distance = local_distance
         self.layer_distances = layer_distances
         self.neuron_types = neuron_types
+        self.inhibitory = inhibitory
         self.n_params = n_params
         self.n_neuron_types = len(neuron_types)
 
@@ -25,6 +27,7 @@ class NueronPopulation:
         self.n_neurons = sum(layer_distribution)
 
         self.neuron_population = np.zeros((self.n_neurons, self.n_params))
+        self.inhibitory_mask = np.zeros((self.n_neurons), dtype=bool)
         self.neuron_population_types = []
         self.layer_indices = []
 
@@ -42,6 +45,10 @@ class NueronPopulation:
                 layer_indices_layer.append(index)
                 # Get the neuron type for this neuron
                 neuron_type = np.random.choice(self.neuron_types, p=self.neuron_distribution[i])
+                # Get the neuron type index
+                neuron_type_index = self.get_neuron_type_index(neuron_type)
+                # Set the inhibitory mask for this neuron
+                self.inhibitory_mask[index] = self.inhibitory[neuron_type_index]
                 # Store the neuron type in the neuron population
                 self.neuron_population_types.append(neuron_type)
                 # Get the parameters for this neuron type

@@ -31,6 +31,9 @@ class Connectome:
         # No-connection matrix
         self.NC = np.zeros((self.neuron_population.n_neurons, max_synapses), dtype=bool)
 
+        self.build_connectome()
+        self.build_receivers()
+
     def set_connection(self, i, j, w = None):
         """
         Set the connection from neuron i to neuron j.
@@ -69,6 +72,7 @@ class Connectome:
             layer = self.neuron_population.get_layer(i)
             # connectivity_probability: shape (n_layers, n_layers, n_neuron_types, n_neuron_types+2)
             # Relevant connectivity
+            # NOTE that ideally this should be scaled by the number of each neuron type in the layer
             connectivity_layer = self.connectivity_probability[layer, :, neuron_type, :]
             # Create probability distribution for the downstream neurons
             donwstream_neuron_probs = np.zeros(self.neuron_population.n_neurons, dtype=float)
@@ -103,5 +107,15 @@ class Connectome:
                     # Draw a downstream neuron, autaptic cant be drawn again since prob is 0
                     target_neuron = np.random.choice(np.arange(self.neuron_population.n_neurons), p=donwstream_neuron_probs)
                     # Set the connection
-                    # Note that this allows for multiple connections to the same neuron
+                    # NOTE that this allows for multiple connections to the same neuron
                     self.set_connection(i, j, self.get_random_weight(layer, self.neuron_population.get_layer(target_neuron)))
+
+    def build_receivers(self):
+        """
+        Build the receivers for the connectome.
+        """
+        # Build the receivers for the connectome
+        self.receivers = np.zeros((self.neuron_population.n_neurons, self.neuron_population.n_neurons, self.max_synapses), dtype=bool)
+        for i in range(self.neuron_population.n_neurons):
+            # Get where neuron i is downstream
+            self.receivers[i][self.M == i] = True
