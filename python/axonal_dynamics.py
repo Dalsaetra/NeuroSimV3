@@ -21,6 +21,7 @@ class AxonalDynamics:
 
     def push_many(self, spikes, t_now):
         """Vectorised insertion of many spikes in one call."""
+        # Spikes shape: n_neurons x 1
         if spikes.sum() == 0:
             return
         ii = np.where(spikes)[0]

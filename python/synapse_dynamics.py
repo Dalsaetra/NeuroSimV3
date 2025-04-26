@@ -40,7 +40,7 @@ class SynapseDynamics:
 
         # Element-wise multiplication of spikes and weights, keeping the shape of spikes
         synaptic_input = np.multiply(spikes, self.connectome.W)
-        # Use M to get the postsynaptic neuron indices
+        # Apply the synaptic input to the presynaptic neurons
         synaptic_input = (self.connectome.receivers * synaptic_input).sum(axis=(1, 2))
 
         self.g_ST += synaptic_input
