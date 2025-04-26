@@ -1,7 +1,7 @@
 import numpy as np
 
-class Neuron_State:
-    def __init__(self, V, u, spike, T=None):
+class NeuronState:
+    def __init__(self, V, u, spike, params, T=None):
         self.V = V
         self.u = u
         self.spike = spike
@@ -10,6 +10,23 @@ class Neuron_State:
             self.T = np.zeros_like(V)
         else:
             self.T = T
+
+        self.params = params
+        self.k = params[0]
+        self.a = params[1]
+        self.b = params[2]
+        self.d = params[3]
+        self.C = params[4]
+        self.Vr = params[5]
+        self.Vt = params[6]
+        self.Vpeak = params[7]
+        self.c = params[8]
+        self.delta_V = params[9]
+        self.bias = params[10]
+        self.threshold_mult = params[11]
+        self.threshold_decay = params[12]
+
+        self.n_neurons = V.shape[0]
 
     def __call__(self):
         return np.array([self.V, self.u, self.spike, self.T])
@@ -23,168 +40,100 @@ class Neuron_State:
         self.spike[key] = value[2]
         self.T[key] = value[3]
 
-def IZ_Neuron_stepper_euler(states, params, I, dt):
-    # states: states_per_neuron x n_neurons, params: params_per_neuron x n_neurons
-    # states = [V, u]
-    # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
-    # Vectorized version of IZ_Neuron.step_euler
-    n_neurons = states.shape[1]
-    k = params[0]
-    a = params[1]
-    b = params[2]
-    d = params[3]
-    C = params[4]
-    Vr = params[5]
-    Vt = params[6]
-    Vpeak = params[7]
-    c = params[8]
-    delta_V = params[9]
-    bias = params[10]
-    V = states[0]
-    u = states[1]
-
-    spike = np.zeros(n_neurons, dtype=bool)
-
-    dV = (k * (V - Vr) * (V - Vt) - u + I + bias)/C
-    du = a * (b * (V - Vr) - u)
-
-    V += dt * dV
-    u += dt * du
-
-    spike_prob = dt * np.exp((V - Vpeak) / delta_V)
-    spike_rand = np.random.rand(n_neurons)
-    spike = spike_rand < spike_prob
-
-    V = np.where(spike, c, V)
-    u = np.where(spike, u + d, u)
-
-    return Neuron_State(V, u, spike)
-
-
-def IZ_Neuron_stepper_euler_deterministic(states, params, I, dt):
-    # states: states_per_neuron x n_neurons, params: params_per_neuron x n_neurons
-    # states = [V, u]
-    # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
-    # Vectorized version of IZ_Neuron.step_euler
-    n_neurons = states.shape[1]
-    # delta_V not used
-    k = params[0]
-    a = params[1]
-    b = params[2]
-    d = params[3]
-    C = params[4]
-    Vr = params[5]
-    Vt = params[6]
-    Vpeak = params[7]
-    c = params[8]
-    # delta_V = params[9]
-    bias = params[10]
-    V = states[0]
-    u = states[1]
-
-    spike = np.zeros(n_neurons, dtype=bool)
-
-    dV = (k * (V - Vr) * (V - Vt) - u + I + bias)/C
-    du = a * (b * (V - Vr) - u)
-
-    V += dt * dV
-    u += dt * du
-
-    spike = V >= Vpeak
-
-    V = np.where(spike, c, V)
-    u = np.where(spike, u + d, u)
-
-    return Neuron_State(V, u, spike)
-
-def IZ_Neuron_stepper_adapt(states, params, I, dt):
+    def IZ_Neuron_stepper_euler(self, I, dt):
         # states: states_per_neuron x n_neurons, params: params_per_neuron x n_neurons
-    # states = [V, u]
-    # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
-    # Vectorized version of IZ_Neuron.step_euler
-    n_neurons = states.shape[1]
-    # delta_V not used
-    k = params[0]
-    a = params[1]
-    b = params[2]
-    d = params[3]
-    C = params[4]
-    Vr = params[5]
-    Vt = params[6]
-    Vpeak = params[7]
-    c = params[8]
-    delta_V = params[9]
-    bias = params[10]
-    threshold_mult = params[11]
-    threshold_decay = params[12]
-    V = states[0]
-    u = states[1]
-    T = states[3]
+        # states = [V, u]
+        # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
+        # Vectorized version of IZ_Neuron.step_euler
 
-    spike = np.zeros(n_neurons, dtype=bool)
+        spike = np.zeros(self.n_neurons, dtype=bool)
 
-    dV = (k * (V - Vr) * (V - Vt) - u + I + bias)/C
-    du = a * (b * (V - Vr) - u)
+        dV = (self.k * (self.V - self.Vr) * (self.V - self.Vt) - self.u + I + self.bias)/self.C
+        du = self.a * (self.b * (self.V - self.Vr) - self.u)
 
-    V += dt * dV
-    u += dt * du
+        self.V += dt * dV
+        self.u += dt * du
 
-    eff_threshold = Vpeak + T
+        spike_prob = dt * np.exp((self.V - self.Vpeak) / self.delta_V)
+        spike_rand = np.random.rand(self.n_neurons)
+        spike = spike_rand < spike_prob
 
-    T *= threshold_decay
+        self.V = np.where(spike, self.c, self.V)
+        self.u = np.where(spike, self.u + self.d, self.u)
+        self.spike = spike
 
-    spike_prob = dt * np.exp((V - eff_threshold) / delta_V)
-    spike_rand = np.random.rand(n_neurons)
-    spike = spike_rand < spike_prob
 
-    if spike.any():
-        T = np.where(spike, T * threshold_mult, T)
-        V = np.where(spike, c, V)
-        u = np.where(spike, u + d, u)
+    def IZ_Neuron_stepper_euler_deterministic(self, I, dt):
+        # states: states_per_neuron x n_neurons, params: params_per_neuron x n_neurons
+        # states = [V, u]
+        # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
+        # Vectorized version of IZ_Neuron.step_euler
 
-    return Neuron_State(V, u, spike, T)
+        spike = np.zeros(self.n_neurons, dtype=bool)
 
-def IZ_Neuron_stepper_adapt_deterministic(states, params, I, dt):
-    # states: states_per_neuron x n_neurons, params: params_per_neuron x n_neurons
-    # states = [V, u]
-    # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
-    # Vectorized version of IZ_Neuron.step_euler
-    n_neurons = states.shape[1]
-    # delta_V not used
-    k = params[0]
-    a = params[1]
-    b = params[2]
-    d = params[3]
-    C = params[4]
-    Vr = params[5]
-    Vt = params[6]
-    Vpeak = params[7]
-    c = params[8]
-    # delta_V = params[9]
-    bias = params[10]
-    threshold_mult = params[11]
-    threshold_decay = params[12]
-    V = states[0]
-    u = states[1]
-    T = states[3]
+        dV = (self.k * (self.V - self.Vr) * (self.V - self.Vt) - self.u + I + self.bias)/self.C
+        du = self.a * (self.b * (self.V - self.Vr) - self.u)
 
-    spike = np.zeros(n_neurons, dtype=bool)
+        self.V += dt * dV
+        self.u += dt * du
 
-    dV = (k * (V - Vr) * (V - Vt) - u + I + bias)/C
-    du = a * (b * (V - Vr) - u)
+        spike = self.V >= self.Vpeak
 
-    V += dt * dV
-    u += dt * du
+        self.V = np.where(spike, self.c, self.V)
+        self.u = np.where(spike, self.u + self.d, self.u)
+        self.spike = spike
 
-    eff_threshold = Vpeak + T
+    def IZ_Neuron_stepper_adapt(self, I, dt):
+            # states: states_per_neuron x n_neurons, params: params_per_neuron x n_neurons
+        # states = [V, u]
+        # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
 
-    T *= threshold_decay
+        spike = np.zeros(self.n_neurons, dtype=bool)
 
-    spike = V >= eff_threshold
+        dV = (self.k * (self.V - self.Vr) * (self.V - self.Vt) - self.u + I + self.bias)/self.C
+        du = self.a * (self.b * (self.V - self.Vr) - self.u)
 
-    if spike.any():
-        T = np.where(spike, eff_threshold * threshold_mult - Vpeak, T)
-        V = np.where(spike, c, V)
-        u = np.where(spike, u + d, u)
+        self.V += dt * dV
+        self.u += dt * du
 
-    return Neuron_State(V, u, spike, T)
+        eff_threshold = self.Vpeak + self.T
+
+        self.T *= self.threshold_decay
+
+        spike_prob = dt * np.exp((self.V - eff_threshold) / self.delta_V)
+        spike_rand = np.random.rand(self.n_neurons)
+        spike = spike_rand < spike_prob
+
+        if spike.any():
+            self.T = np.where(spike, self.T * self.threshold_mult, self.T)
+            self.V = np.where(spike, self.c, self.V)
+            self.u = np.where(spike, self.u + self.d, self.u)
+
+        self.spike = spike
+
+    def IZ_Neuron_stepper_adapt_deterministic(self, I, dt):
+        # states: states_per_neuron x n_neurons, params: params_per_neuron x n_neurons
+        # states = [V, u]
+        # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
+        # Vectorized version of IZ_Neuron.step_euler
+
+        spike = np.zeros(self.n_neurons, dtype=bool)
+
+        dV = (self.k * (self.V - self.Vr) * (self.V - self.Vt) - self.u + I + self.bias)/self.C
+        du = self.a * (self.b * (self.V - self.Vr) - self.u)
+
+        self.V += dt * dV
+        self.u += dt * du
+
+        eff_threshold = self.Vpeak + self.T
+
+        self.T *= self.threshold_decay
+
+        spike = self.V >= eff_threshold
+
+        if spike.any():
+            self.T = np.where(spike, eff_threshold * self.threshold_mult - self.Vpeak, self.T)
+            self.V = np.where(spike, self.c, self.V)
+            self.u = np.where(spike, self.u + self.d, self.u)
+
+        self.spike = spike
