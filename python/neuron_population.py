@@ -2,11 +2,10 @@ import numpy as np
 from neuron_templates import neuron_type_IZ
 
 class NueronPopulation:
-    def __init__(self, layer_distribution, neuron_distribution, local_distance, layer_distances, neuron_types, inhibitory, n_params=13):
+    def __init__(self, layer_distribution, neuron_distribution, layer_distances, neuron_types, inhibitory, n_params=13):
         """
         layer_distribution: list of integers, number of neurons in each layer
         neuron_distribution: list with length layer_distribution of np.arrays of length neuron_types, probabilities of each neuron type in each layer
-        local_distance: list of floats of length n_layers, average distance between neurons in the same layer
         layer_distances: matrix of distances between layers, shape (n_layers, n_layers)
         neuron_types: list of neuron types (string), keys for types un neuron_templates.py
         inhibitory: list of booleans, True if the neuron is inhibitory, False if it is excitatory, shape as neuron_types
@@ -15,7 +14,6 @@ class NueronPopulation:
 
         self.layer_distribution = layer_distribution
         self.neuron_distribution = neuron_distribution
-        self.local_distance = local_distance
         self.layer_distances = layer_distances
         self.neuron_types = neuron_types
         self.inhibitory = inhibitory

@@ -33,6 +33,7 @@ class Connectome:
 
         self.build_connectome()
         self.build_receivers()
+        self.build_distances()
 
     def set_connection(self, i, j, w = None):
         """
@@ -119,3 +120,17 @@ class Connectome:
         for i in range(self.neuron_population.n_neurons):
             # Get where neuron i is downstream
             self.receivers[i][self.M == i] = True
+
+    def build_distances(self):
+        """
+        Build the distances between neurons in the connectome.
+        """
+        # Build the distances between neurons in the connectome
+        self.distances = np.zeros_like(self.M, dtype=float)
+        for i in range(self.neuron_population.n_neurons):
+            layer_i = self.neuron_population.get_layer(i)
+            for j in range(self.max_synapses):
+                if not self.NC[i, j]:
+                    layer_j = self.neuron_population.get_layer(self.M[i, j])
+                    # Get the distance from distance matrix
+                    self.distances[i, j] = self.neuron_population.layer_distances[layer_i, layer_j]
