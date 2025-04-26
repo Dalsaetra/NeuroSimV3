@@ -55,3 +55,24 @@ class NueronPopulation:
         self.neuron_population[:, 10] = bias
         self.neuron_population[:, 11] = threshold_mult
         self.neuron_population[:, 12] = threshold_decay
+
+    def get_layer(self, neuron_index):
+        """
+        Get the layer of a neuron given its index
+        """
+        for i in range(self.n_layers):
+            if neuron_index in self.layer_indices[i]:
+                return i
+        return None
+    
+    def get_neuron_type(self, neuron_index):
+        """
+        Get the neuron type of a neuron given its index
+        """
+        return self.neuron_population_types[neuron_index]
+    
+    def get_neuron_type_index(self, neuron_type):
+        """
+        Get the index of a neuron type given its name
+        """
+        return self.neuron_types.index(neuron_type)
