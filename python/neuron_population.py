@@ -1,8 +1,9 @@
 import numpy as np
 from neuron_templates import neuron_type_IZ
 
-class NueronPopulation:
-    def __init__(self, layer_distribution, neuron_distribution, layer_distances, neuron_types, inhibitory, n_params=13):
+class NeuronPopulation:
+    def __init__(self, layer_distribution, neuron_distribution, layer_distances, neuron_types, 
+                 inhibitory, threshold_decay, delta_V=2.5, bias=0.0, threshold_mult=1.05, n_params=13):
         """
         layer_distribution: list of integers, number of neurons in each layer
         neuron_distribution: list with length layer_distribution of np.arrays of length neuron_types, probabilities of each neuron type in each layer
@@ -29,7 +30,9 @@ class NueronPopulation:
         self.neuron_population_types = []
         self.layer_indices = []
 
-    def populate(self, threshold_decay, delta_V=2.5, bias=0.0, threshold_mult=1.05):
+        self.populate(threshold_decay, delta_V, bias, threshold_mult)
+
+    def populate(self, threshold_decay, delta_V, bias, threshold_mult):
         """
         Populate the neuron population with random neurons from the neuron templates
         """
@@ -38,13 +41,15 @@ class NueronPopulation:
         # Populate the neuron population with random neurons from the neuron templates
         for i in range(self.n_layers):
             layer_indices_layer = []
+            self.dist_norm = self.neuron_distribution[i] / np.sum(self.neuron_distribution[i])
             for j in range(self.layer_distribution[i]):
                 index = sum(self.layer_distribution[:i]) + j
                 layer_indices_layer.append(index)
                 # Get the neuron type for this neuron
-                neuron_type = np.random.choice(self.neuron_types, p=self.neuron_distribution[i])
+                # Normalize distribution to sum to 1
+                neuron_type = np.random.choice(self.neuron_types, p=self.dist_norm)
                 # Get the neuron type index
-                neuron_type_index = self.get_neuron_type_index(neuron_type)
+                neuron_type_index = self.type_index_from_neuron_type(neuron_type)
                 # Set the inhibitory mask for this neuron
                 self.inhibitory_mask[index] = self.inhibitory[neuron_type_index]
                 # Store the neuron type in the neuron population
@@ -70,14 +75,33 @@ class NueronPopulation:
                 return i
         return None
     
-    def get_neuron_type(self, neuron_index):
+    def type_from_neuron_index(self, neuron_index):
         """
         Get the neuron type of a neuron given its index
         """
         return self.neuron_population_types[neuron_index]
     
-    def get_neuron_type_index(self, neuron_type):
+    def type_index_from_neuron_type(self, neuron_type):
         """
         Get the index of a neuron type given its name
         """
         return self.neuron_types.index(neuron_type)
+    
+    def type_index_from_neuron_index(self, neuron_index):
+        """
+        Get the index of a neuron type given its index
+        """
+        neuron_type = self.type_from_neuron_index(neuron_index)
+        return self.type_index_from_neuron_type(neuron_type)
+    
+    def get_neurons_from_layer(self, layer):
+        """
+        Get the neurons from a layer given its index
+        """
+        return self.layer_indices[layer]
+    
+    def get_types_from_layer(self, layer):
+        """
+        Get the neuron types from a layer given its index
+        """
+        return np.array(self.neuron_population_types)[self.get_neurons_from_layer(layer)]

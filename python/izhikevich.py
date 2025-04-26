@@ -1,15 +1,11 @@
 import numpy as np
 
 class NeuronState:
-    def __init__(self, V, u, spike, params, T=None):
-        self.V = V
-        self.u = u
-        self.spike = spike
+    def __init__(self, params, stepper_type, state0=None):
+        # params shape: params_per_neuron x n_neurons
         # T is the threshold delta to add after each spike
-        if T is None:
-            self.T = np.zeros_like(V)
-        else:
-            self.T = T
+        # state0 shape: 4 x n_neurons
+        self.n_neurons = params.shape[1]
 
         self.params = params
         self.k = params[0]
@@ -26,7 +22,27 @@ class NeuronState:
         self.threshold_mult = params[11]
         self.threshold_decay = params[12]
 
-        self.n_neurons = V.shape[0]
+        if state0 is None:
+            self.V = np.ones((self.n_neurons), dtype=float) * self.Vr
+            self.u = np.zeros((self.n_neurons), dtype=float)
+            self.spike = np.zeros((self.n_neurons), dtype=bool)
+            self.T = np.zeros_like(self.V)
+        else:
+            self.V = state0[0]
+            self.u = state0[1]
+            self.spike = state0[2]
+            self.T = state0[3]
+
+        if stepper_type == "euler":
+            self.step = self.IZ_Neuron_stepper_euler
+        elif stepper_type == "euler_det":
+            self.step = self.IZ_Neuron_stepper_euler_deterministic
+        elif stepper_type == "adapt":
+            self.step = self.IZ_Neuron_stepper_adapt
+        elif stepper_type == "adapt_det":
+            self.step = self.IZ_Neuron_stepper_adapt_deterministic
+        else:
+            raise ValueError("Invalid stepper type. Choose from 'euler', 'euler_deterministic', 'adapt', or 'adapt_deterministic'.")
 
     def __call__(self):
         return np.array([self.V, self.u, self.spike, self.T])
@@ -84,10 +100,6 @@ class NeuronState:
         self.spike = spike
 
     def IZ_Neuron_stepper_adapt(self, I, dt):
-            # states: states_per_neuron x n_neurons, params: params_per_neuron x n_neurons
-        # states = [V, u]
-        # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
-
         spike = np.zeros(self.n_neurons, dtype=bool)
 
         dV = (self.k * (self.V - self.Vr) * (self.V - self.Vt) - self.u + I + self.bias)/self.C
@@ -112,9 +124,6 @@ class NeuronState:
         self.spike = spike
 
     def IZ_Neuron_stepper_adapt_deterministic(self, I, dt):
-        # states: states_per_neuron x n_neurons, params: params_per_neuron x n_neurons
-        # states = [V, u]
-        # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
         # Vectorized version of IZ_Neuron.step_euler
 
         spike = np.zeros(self.n_neurons, dtype=bool)

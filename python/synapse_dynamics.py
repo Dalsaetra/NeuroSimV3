@@ -3,7 +3,7 @@ from connectome import Connectome
 
 class SynapseDynamics:
     def __init__(self, connectome: Connectome, dt, tau_ST=5, tau_LT=150, 
-                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, weight_mult = 1.0):
+                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, NMDA_scale = 0.1, weight_mult = 1.0):
         """
         SynapseDynamics class to represent the synaptic dynamics of a neuron population.
         """
@@ -27,6 +27,7 @@ class SynapseDynamics:
         self.LT_decay = np.exp(-dt / tau_LT)
 
         self.weight_mult = weight_mult
+        self.NMDA_scale = NMDA_scale
 
 
     def decay(self):
@@ -52,7 +53,7 @@ class SynapseDynamics:
         # Returns: n_neurons x 1
 
         V_shifted = (neurons_V + 80) / 60
-        NMDA_factor = V_shifted**2 / (1 + V_shifted**2)
+        NMDA_factor = V_shifted**2 / (1 + V_shifted**2) * self.NMDA_scale
         I_ST = self.g_ST * (self.E_ST - neurons_V)
         # Combine NMDA and GABA_B calculations
         V_diff = self.E_LT - neurons_V

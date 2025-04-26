@@ -1,14 +1,14 @@
 import numpy as np
-from neuron_population import NueronPopulation
+from neuron_population import NeuronPopulation
 
 class Connectome:
-    def __init__(self, max_synapses, neuron_population: NueronPopulation, connectivity_probability, synapse_strengths):
+    def __init__(self, max_synapses, neuron_population: NeuronPopulation, connectivity_probability, synapse_strengths):
         """
         Connectome class to represent the connectivity between neurons in a population.
         
         Parameters:
         max_synapses: int, maximum number of downstream synapses per neuron
-        neuron_population: NueronPopulation object, the neuron population to connect
+        neuron_population: NeuronPopulation object, the neuron population to connect
         connectivity_probability: array of global connectivity probability, shape (n_layers, n_layers, n_neuron_types, n_neuron_types+2), -2 dimension is for autaptic connections, -1 for no connection
         synapse_strengths: array of synapse weight scale, shape (n_layers, n_layers)
         """
@@ -69,7 +69,7 @@ class Connectome:
         """
         # Generate random connectivity based on the connectivity probability
         for i in range(self.neuron_population.n_neurons):
-            neuron_type = self.neuron_population.get_neuron_type(i)
+            neuron_type = self.neuron_population.type_index_from_neuron_index(i)
             layer = self.neuron_population.get_layer(i)
             # connectivity_probability: shape (n_layers, n_layers, n_neuron_types, n_neuron_types+2)
             # Relevant connectivity
@@ -81,10 +81,13 @@ class Connectome:
                 if k != i:
                     # Get the layer and neuron type of the downstream neuron
                     downstream_layer = self.neuron_population.get_layer(k)
-                    downstream_neuron_type = self.neuron_population.get_neuron_type_index(k)
+                    downstream_neuron_type = self.neuron_population.type_index_from_neuron_index(k)
                     # Get the connectivity probability
                     prob = connectivity_layer[downstream_layer, downstream_neuron_type]
                     donwstream_neuron_probs[k] = prob
+
+            # Normalize the probabilities
+            donwstream_neuron_probs /= np.sum(donwstream_neuron_probs)
 
             autaptic_drawn = False
             for j in range(self.max_synapses):
@@ -132,5 +135,5 @@ class Connectome:
             for j in range(self.max_synapses):
                 if not self.NC[i, j]:
                     layer_j = self.neuron_population.get_layer(self.M[i, j])
-                    # Get the distance from distance matrix
-                    self.distances[i, j] = self.neuron_population.layer_distances[layer_i, layer_j]
+                    # Get the distance from distance matrix, in mm
+                    self.distances[i, j] = self.neuron_population.layer_distances[layer_i, layer_j] + np.random.normal(0, 0.2)

@@ -1,7 +1,6 @@
 import numpy as np
 import heapq
 
-from neuron_population import NueronPopulation
 from connectome import Connectome
 
 class AxonalDynamics:
