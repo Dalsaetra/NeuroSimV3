@@ -1,9 +1,33 @@
 import numpy as np
 from connectome import Connectome
 
+import numba as nb
+
+@nb.njit(parallel=True)
+def masked_sum(mask, input_):
+    n = mask.shape[0]
+    out = np.empty(n, dtype=input_.dtype)
+    for i in nb.prange(n):
+        acc = 0.0
+        for j in range(mask.shape[1]):
+            for k in range(mask.shape[2]):
+                if mask[i, j, k]:
+                    acc += input_[j, k]
+        out[i] = acc
+    return out
+
+@nb.njit(parallel=True)
+def scatter_sum(M, WS, n_neurons):
+    out = np.zeros(n_neurons, dtype=WS.dtype)
+    for p in nb.prange(M.size):
+        k = M.ravel()[p]
+        if k >= 0:
+            out[k] += WS.ravel()[p]
+    return out
+
 class SynapseDynamics:
     def __init__(self, connectome: Connectome, dt, tau_ST=5, tau_LT=150, 
-                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, NMDA_scale = 0.1, weight_mult = 1.0):
+                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, NMDA_scale = 1.0, weight_mult = 0.002):
         """
         SynapseDynamics class to represent the synaptic dynamics of a neuron population.
         """
@@ -39,10 +63,21 @@ class SynapseDynamics:
     def spike_input(self, spikes):
         # spikes: n_neurons x max_synapses
 
+        # If spikes are all zeross then return
+        if np.all(spikes == 0):
+            return
+
         # Element-wise multiplication of spikes and weights, keeping the shape of spikes
-        synaptic_input = np.multiply(spikes, self.connectome.W)
+        WS = np.multiply(spikes, self.connectome.W) # shape (n_neurons x max_synapses)
+        # synaptic_input = scatter_sum(self.connectome.M, WS, self.connectome.neuron_population.n_neurons) # shape (n_neurons x 1)
+        synaptic_input = np.bincount(self.connectome.M.ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
         # Apply the synaptic input to the presynaptic neurons
-        synaptic_input = (self.connectome.receivers * synaptic_input).sum(axis=(1, 2))
+        # Connectome.receivers: n_neurons x n_neurons x max_synapses
+        # synaptic_input = np.einsum('ijk,jk->i', self.connectome.receivers, synaptic_input)
+        # synaptic_input = masked_sum(self.connectome.receivers, synaptic_input)
+        # synaptic_flat = synaptic_input.ravel()
+        # synaptic_input = self.connectome.receivers2d @ synaptic_flat
+        # synaptic_input = (self.connectome.receivers * synaptic_input).sum(axis=(1, 2))
 
         self.g_ST += synaptic_input
         self.g_LT += synaptic_input

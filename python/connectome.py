@@ -87,6 +87,20 @@ class Connectome:
                     donwstream_neuron_probs[k] = prob
 
             # Normalize the probabilities
+            if np.abs(np.sum(donwstream_neuron_probs)) < 1e-10:
+                # If no connections are possible, draw autaptic connection only
+                autaptic_prob = self.connectivity_probability[layer, layer, neuron_type, -2]
+                if np.random.rand() < autaptic_prob:
+                    # Autaptic connection
+                    target_neuron = i
+                    self.set_connection(i, 0, self.get_random_weight(layer, layer))
+
+                # And set rest of connections to no connection
+                for j in range(1, self.max_synapses):
+                    self.NC[i, j] = True
+                continue
+
+
             donwstream_neuron_probs /= np.sum(donwstream_neuron_probs)
 
             autaptic_drawn = False
@@ -123,6 +137,10 @@ class Connectome:
         for i in range(self.neuron_population.n_neurons):
             # Get where neuron i is downstream
             self.receivers[i][self.M == i] = True
+
+        # mask_f32 = self.receivers.astype(np.float32)
+        # self.receivers2d = mask_f32.reshape(self.neuron_population.n_neurons, -1)
+        self.receivers = self.receivers.astype(np.float32)  # Convert to float32 for compatibility with other operations
 
     def build_distances(self):
         """
