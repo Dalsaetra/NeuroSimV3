@@ -27,7 +27,7 @@ def scatter_sum(M, WS, n_neurons):
 
 class SynapseDynamics:
     def __init__(self, connectome: Connectome, dt, tau_ST=5, tau_LT=150, 
-                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, NMDA_scale = 1.0, weight_mult = 0.002):
+                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, NMDA_scale = 1.0, weight_mult = 0.005):
         """
         SynapseDynamics class to represent the synaptic dynamics of a neuron population.
         """
