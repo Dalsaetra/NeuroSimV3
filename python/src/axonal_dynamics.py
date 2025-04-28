@@ -27,6 +27,7 @@ class AxonalDynamics:
         v_vals = self.v
         delays = t_now + self.L[ii] / v_vals
         for i in range(len(ii)):
+            # NOTE: j is the index of the synapse, not the neuron
             for j in range(self.connectome.max_synapses):
                 heapq.heappush(self._heap, (float(delays[i,j]), int(ii[i]), int(j)))
 

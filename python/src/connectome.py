@@ -30,12 +30,16 @@ class Connectome:
 
         # No-connection matrix
         self.NC = np.zeros((self.neuron_population.n_neurons, max_synapses), dtype=bool)
+        
 
         self.build_connectome()
         self.build_receivers()
         self.build_distances()
 
-    def set_connection(self, i, j, w = None):
+        # Invert NC
+        self.NC_invert = ~self.NC
+
+    def set_connection(self, i, j, k, w = None):
         """
         Set the connection from neuron i to neuron j.
         
@@ -44,7 +48,7 @@ class Connectome:
         j: int, index of the postsynaptic neuron
         """
         if j < self.max_synapses:
-            self.M[i, j] = j
+            self.M[i, j] = k
             if w is not None:
                 self.W[i, j] = w
         else:
@@ -86,14 +90,16 @@ class Connectome:
                     prob = connectivity_layer[downstream_layer, downstream_neuron_type]
                     donwstream_neuron_probs[k] = prob
 
+            normalizer = np.sum(donwstream_neuron_probs)
+
             # Normalize the probabilities
-            if np.abs(np.sum(donwstream_neuron_probs)) < 1e-10:
+            if np.abs(normalizer) < 1e-10:
                 # If no connections are possible, draw autaptic connection only
                 autaptic_prob = self.connectivity_probability[layer, layer, neuron_type, -2]
                 if np.random.rand() < autaptic_prob:
                     # Autaptic connection
                     target_neuron = i
-                    self.set_connection(i, 0, self.get_random_weight(layer, layer))
+                    self.set_connection(i, 0, i, self.get_random_weight(layer, layer))
 
                 # And set rest of connections to no connection
                 for j in range(1, self.max_synapses):
@@ -101,7 +107,7 @@ class Connectome:
                 continue
 
 
-            donwstream_neuron_probs /= np.sum(donwstream_neuron_probs)
+            donwstream_neuron_probs /= normalizer
 
             autaptic_drawn = False
             for j in range(self.max_synapses):
@@ -113,7 +119,7 @@ class Connectome:
                     if np.random.rand() < autaptic_prob:
                         # Autaptic connection
                         target_neuron = i
-                        self.set_connection(i, j, self.get_random_weight(layer, layer))
+                        self.set_connection(i, j, i, self.get_random_weight(layer, layer))
                         continue
 
                 # Then draw if we have a downstream connection
@@ -126,7 +132,7 @@ class Connectome:
                     target_neuron = np.random.choice(np.arange(self.neuron_population.n_neurons), p=donwstream_neuron_probs)
                     # Set the connection
                     # NOTE that this allows for multiple connections to the same neuron
-                    self.set_connection(i, j, self.get_random_weight(layer, self.neuron_population.get_layer(target_neuron)))
+                    self.set_connection(i, j, target_neuron, self.get_random_weight(layer, self.neuron_population.get_layer(target_neuron)))
 
     def build_receivers(self):
         """

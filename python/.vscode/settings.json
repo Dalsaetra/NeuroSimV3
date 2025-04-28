@@ -1,0 +1,6 @@
+{
+    // … any existing settings …
+    "python.analysis.extraPaths": [
+      "NeuroSimV3/python/src"
+    ]
+  }

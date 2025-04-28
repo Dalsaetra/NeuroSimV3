@@ -5,6 +5,7 @@ from axonal_dynamics import AxonalDynamics
 from synapse_dynamics import SynapseDynamics
 from neuron_templates import neuron_type_IZ
 from input_integration import InputIntegration
+from plasticity import STDP  # Assuming you have a plasticity module
 
 class SimulationStats:
     def __init__(self):
@@ -24,6 +25,7 @@ class Simulation:
         self.synapse_dynamics = SynapseDynamics(connectome, self.dt)
         self.neuron_states = NeuronState(connectome.neuron_population.neuron_population.T, stepper_type=stepper_type, state0=state0)
         self.integrator = InputIntegration(self.synapse_dynamics)
+        self.plasticity = STDP(connectome, self.dt)
 
         self.stats = SimulationStats()
         self.stats.Vs.append(self.neuron_states.V.copy())
@@ -50,8 +52,12 @@ class Simulation:
         self.axonal_dynamics.push_many(post_spikes, self.t_now + self.dt)
         # Time step for synapse dynamics (only decay)
         self.synapse_dynamics.decay()
-        # TODO: update the synapse weights based on the pre_spikes and post_spikes, from plasticity class
-        # TODO: perform plasticity time step (like trace decay)
+        # Update the synapse weights based on the traces from last step
+        self.plasticity.apply_weight_changes(gaba_plasticity=True, reward=1)  # Assuming gaba_plasticity is False for now
+        # Perform plasticity time step (like trace decay)
+        self.plasticity.decay_traces()
+        # Update plasticity based on new spikes
+        self.plasticity.spikes_in(pre_spikes, post_spikes)
         # Update synapse reaction class from the pre_spikes
         self.synapse_dynamics.spike_input(pre_spikes)
         # Update the current time
