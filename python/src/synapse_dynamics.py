@@ -3,31 +3,45 @@ from connectome import Connectome
 
 import numba as nb
 
-@nb.njit(parallel=True)
-def masked_sum(mask, input_):
-    n = mask.shape[0]
-    out = np.empty(n, dtype=input_.dtype)
-    for i in nb.prange(n):
-        acc = 0.0
-        for j in range(mask.shape[1]):
-            for k in range(mask.shape[2]):
-                if mask[i, j, k]:
-                    acc += input_[j, k]
-        out[i] = acc
-    return out
+@nb.njit(parallel=False, fastmath=True, cache=True)
+def _syn_current_numba(neurons_V,
+                       g_ST, E_ST,
+                       g_LT, E_LT,
+                       excit_mask, inhib_mask,
+                       NMDA_scale: float,
+                       weight_mult: float):          # <── scalar
+    """
+    Compute total synaptic current for every neuron.
 
-@nb.njit(parallel=True)
-def scatter_sum(M, WS, n_neurons):
-    out = np.zeros(n_neurons, dtype=WS.dtype)
-    for p in nb.prange(M.size):
-        k = M.ravel()[p]
-        if k >= 0:
-            out[k] += WS.ravel()[p]
+    All arrays are 1-D with length n_neurons; NMDA_scale and weight_mult are scalars.
+    Returns a 1-D float array of length n_neurons.
+    """
+    n = neurons_V.size
+    out = np.empty(n, dtype=neurons_V.dtype)
+
+    for i in nb.prange(n):          # multi-threaded loop over neurons
+        V = neurons_V[i]
+
+        # NMDA voltage dependence
+        V_shift = (V + 80.0) / 60.0
+        v2      = V_shift * V_shift
+        nmda    = (v2 / (1.0 + v2)) * NMDA_scale
+
+        # Short-term current (AMPA / GABA-A, etc.)
+        I_ST = g_ST[i] * (E_ST[i] - V)
+
+        # Long-term current (NMDA & GABA_B)
+        V_diff = E_LT[i] - V
+        I_LT   = g_LT[i] * V_diff * (nmda * excit_mask[i] + inhib_mask[i])
+
+        # Apply global weight multiplier (scalar)
+        out[i] = (I_ST + I_LT) * weight_mult
+
     return out
 
 class SynapseDynamics:
     def __init__(self, connectome: Connectome, dt, tau_ST=5, tau_LT=150, 
-                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, NMDA_scale = 1.0, weight_mult = 0.005):
+                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, NMDA_scale = 1.0, weight_mult = 0.0005):
         """
         SynapseDynamics class to represent the synaptic dynamics of a neuron population.
         """
@@ -69,29 +83,39 @@ class SynapseDynamics:
 
         # Element-wise multiplication of spikes and weights, keeping the shape of spikes
         WS = np.multiply(spikes, self.connectome.W) # shape (n_neurons x max_synapses)
-        # synaptic_input = scatter_sum(self.connectome.M, WS, self.connectome.neuron_population.n_neurons) # shape (n_neurons x 1)
         synaptic_input = np.bincount(self.connectome.M.ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
-        # Apply the synaptic input to the presynaptic neurons
-        # Connectome.receivers: n_neurons x n_neurons x max_synapses
-        # synaptic_input = np.einsum('ijk,jk->i', self.connectome.receivers, synaptic_input)
-        # synaptic_input = masked_sum(self.connectome.receivers, synaptic_input)
-        # synaptic_flat = synaptic_input.ravel()
-        # synaptic_input = self.connectome.receivers2d @ synaptic_flat
-        # synaptic_input = (self.connectome.receivers * synaptic_input).sum(axis=(1, 2))
 
         self.g_ST += synaptic_input
         self.g_LT += synaptic_input
 
+    # def __call__(self, neurons_V):
+    #     # neurons_V: n_neurons x 1
+    #     # Returns: n_neurons x 1
+
+    #     V_shifted = (neurons_V + 80) / 60
+    #     NMDA_factor = V_shifted**2 / (1 + V_shifted**2) * self.NMDA_scale
+    #     I_ST = self.g_ST * (self.E_ST - neurons_V)
+    #     # Combine NMDA and GABA_B calculations
+    #     V_diff = self.E_LT - neurons_V
+    #     I_LT = self.g_LT * V_diff * (NMDA_factor * self.excitatory_mask + self.inhibitory_mask)
+
+    #     return (I_ST + I_LT) * self.weight_mult
+
     def __call__(self, neurons_V):
-        # neurons_V: n_neurons x 1
-        # I_ext: n_neurons x 1
-        # Returns: n_neurons x 1
+        """
+        Calculate the synaptic current based on the neuron's membrane potential.
 
-        V_shifted = (neurons_V + 80) / 60
-        NMDA_factor = V_shifted**2 / (1 + V_shifted**2) * self.NMDA_scale
-        I_ST = self.g_ST * (self.E_ST - neurons_V)
-        # Combine NMDA and GABA_B calculations
-        V_diff = self.E_LT - neurons_V
-        I_LT = self.g_LT * V_diff * (NMDA_factor * self.excitatory_mask + self.inhibitory_mask)
+        Parameters
+        ----------
+        neurons_V : 1-D float array (n_neurons,)
 
-        return (I_ST + I_LT) * self.weight_mult
+        Returns
+        -------
+        out : 1-D float array (n_neurons,)
+        """
+        return _syn_current_numba(neurons_V,
+                                  self.g_ST, self.E_ST,
+                                  self.g_LT, self.E_LT,
+                                  self.excitatory_mask, self.inhibitory_mask,
+                                  self.NMDA_scale,
+                                  self.weight_mult)

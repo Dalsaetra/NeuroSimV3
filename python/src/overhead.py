@@ -53,11 +53,7 @@ class Simulation:
         # Time step for synapse dynamics (only decay)
         self.synapse_dynamics.decay()
         # Update the synapse weights based on the traces from last step
-        self.plasticity.apply_weight_changes(gaba_plasticity=True, reward=1)  # Assuming gaba_plasticity is False for now
-        # Perform plasticity time step (like trace decay)
-        self.plasticity.decay_traces()
-        # Update plasticity based on new spikes
-        self.plasticity.spikes_in(pre_spikes, post_spikes)
+        self.plasticity.step(pre_spikes, post_spikes, gaba_plasticity=True, reward=1) 
         # Update synapse reaction class from the pre_spikes
         self.synapse_dynamics.spike_input(pre_spikes)
         # Update the current time
