@@ -65,7 +65,10 @@ class Connectome:
         Returns:
         float, random weight for the connection
         """
-        return np.random.normal(loc=self.synapse_strengths[layer_from, layer_to], scale=0.1)
+        weight = np.random.normal(loc=self.synapse_strengths[layer_from, layer_to], scale=0.1)
+        # Ensure the weight is positive
+        weight = max(weight, 0.0)
+        return weight
 
     def build_connectome(self):
         """

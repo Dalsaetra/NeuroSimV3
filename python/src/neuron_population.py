@@ -32,6 +32,10 @@ class NeuronPopulation:
 
         self.populate(threshold_decay, delta_V, bias, threshold_mult)
 
+        # Weight inhibitory mask, 1 for excitatory, -1 for inhibitory
+        self.weight_inhibitory_mask = np.where(self.inhibitory_mask, -1, 1)
+        
+
     def populate(self, threshold_decay, delta_V, bias, threshold_mult):
         """
         Populate the neuron population with random neurons from the neuron templates

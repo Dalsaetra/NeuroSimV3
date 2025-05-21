@@ -246,10 +246,56 @@ class T_STDP:
 
     def step(self, pre_spikes, post_spikes, gaba_plasticity=True, reward=1):
         # Update the synapse weights based on the traces from last step
-        self.apply_weight_changes(gaba_plasticity=True, reward=1)
+        self.apply_weight_changes(gaba_plasticity=gaba_plasticity, reward=reward)
         # Perform plasticity time step (like trace decay)
         self.decay_traces_main()
         self.decay_traces_sub()
         # Update plasticity based on new spikes
         self.spikes_in_main(pre_spikes, post_spikes)
         self.spikes_in_sub(pre_spikes, post_spikes)
+
+
+class PredictiveCoding:
+    def __init__(self, connectome: Connectome, dt, A=0.001, tau_activity=100.0):
+        """
+        Predictive Coding class to represent the predictive coding mechanism.
+
+        """
+        self.connectome = connectome
+
+        self.tau_activity = tau_activity 
+        self.A = A
+
+        self.dt = dt
+
+        self.activity_trace = np.zeros(self.connectome.neuron_population.n_neurons, dtype=np.float32)  # Pre-synaptic spike traces
+        self.decay_pre = np.exp(-dt / tau_activity)
+
+    def step(self, pre_spikes, post_spikes, gaba_plasticity=True, reward=1):
+        """
+        Step the simulation forward in time.
+        """
+        self.activity_trace *= self.decay_pre
+        self.activity_trace[post_spikes] += 1.0
+
+        # Weight times pre-synaptic activity
+        wx = np.multiply(self.activity_trace[:, np.newaxis], self.connectome.W)  # shape (n_neurons x max_synapses)
+
+        if gaba_plasticity:
+            wx[self.connectome.neuron_population.inhibitory_mask] *= -1 
+        else:
+            wx[self.connectome.neuron_population.inhibitory_mask] = 0
+
+        # Expected activity
+        mu = np.bincount(self.connectome.M.ravel(), weights=wx.ravel(), minlength=self.connectome.M.shape[0])
+
+        # Calculate error
+        error = self.activity_trace - mu
+
+        # delta w_ij = A * error_j * activity_i
+        dw = self.A * error[self.connectome.M] * self.activity_trace[:, np.newaxis]
+
+        # Set weight changes to zero where no connection is marked
+        dw[self.connectome.NC] = 0
+ 
+        self.connectome.W += dw
