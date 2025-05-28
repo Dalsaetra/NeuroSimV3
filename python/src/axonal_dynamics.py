@@ -38,7 +38,9 @@ class AxonalDynamics:
             _, i, j = heapq.heappop(heap)
             arrived.append((i, j))
         spikes = np.zeros((self.connectome.neuron_population.n_neurons, self.connectome.max_synapses), dtype=bool)
-        spikes[arrived] = True
+        if arrived:
+            rows, cols = zip(*arrived)    
+            spikes[rows, cols] = True
         return spikes
 
     def __len__(self):
