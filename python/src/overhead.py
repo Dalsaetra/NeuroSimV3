@@ -5,7 +5,7 @@ from axonal_dynamics import AxonalDynamics
 from synapse_dynamics import SynapseDynamics
 from neuron_templates import neuron_type_IZ
 from input_integration import InputIntegration
-from plasticity import STDP, PredictiveCoding, PredictiveCodingSaponati
+from plasticity import STDP, T_STDP, PredictiveCoding, PredictiveCodingSaponati
 
 class SimulationStats:
     def __init__(self):
@@ -26,7 +26,8 @@ class Simulation:
         self.neuron_states = NeuronState(connectome.neuron_population.neuron_population.T, stepper_type=stepper_type, state0=state0)
         self.integrator = InputIntegration(self.synapse_dynamics)
         # self.plasticity = STDP(connectome, self.dt)
-        self.plasticity = PredictiveCoding(connectome, self.dt)
+        self.plasticity = T_STDP(connectome, self.dt)
+        # self.plasticity = PredictiveCoding(connectome, self.dt)
         # self.plasticity = PredictiveCodingSaponati(connectome, self.dt)
 
         self.stats = SimulationStats()

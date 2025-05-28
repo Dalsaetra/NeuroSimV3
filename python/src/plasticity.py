@@ -142,7 +142,7 @@ t_stdp_params = {
     
 class T_STDP:
     def __init__(self, connectome: Connectome, dt, tau_plus=16.8, tau_minus=33.7, 
-                 A_plus=1.0, A_minus=2.0, mode="AtA_H_min", gaba_factor=-1.0):
+                 A_plus=1.0, A_minus=2.0, mode="AtA_H_full", gaba_factor=-1.0):
         """
         Triplet Spike-Timing-Dependent Plasticity (T-STDP) class to represent the T-STDP mechanism.
         
@@ -277,7 +277,7 @@ class T_STDP:
 
 
 class PredictiveCoding:
-    def __init__(self, connectome: Connectome, dt, A=0.001, tau_activity=1000.0, gaba_factor=-0.0):
+    def __init__(self, connectome: Connectome, dt, A=0.0001, tau_activity=1000.0, gaba_factor=-0.0):
         """
         Predictive Coding class to represent the predictive coding mechanism.
 
@@ -326,7 +326,7 @@ class PredictiveCoding:
 
 
 class PredictiveCodingSaponati:
-    def __init__(self, connectome: Connectome, dt, A=0.001, tau_activity=10.0, gaba_factor=-1.5):
+    def __init__(self, connectome: Connectome, dt, A=0.0001, tau_activity=10.0, gaba_factor=-1.0):
         """
         Predictive Coding class to represent the predictive coding mechanism.
 
