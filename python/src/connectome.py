@@ -65,7 +65,7 @@ class Connectome:
         Returns:
         float, random weight for the connection
         """
-        weight = np.random.normal(loc=self.synapse_strengths[layer_from, layer_to], scale=0.1)
+        weight = np.random.normal(loc=self.synapse_strengths[layer_from, layer_to], scale=0.5)
         # Ensure the weight is positive
         weight = max(weight, 0.0)
         return weight
@@ -103,6 +103,9 @@ class Connectome:
                     # Autaptic connection
                     target_neuron = i
                     self.set_connection(i, 0, i, self.get_random_weight(layer, layer))
+                else:
+                    # No connection
+                    self.NC[i, 0] = True
 
                 # And set rest of connections to no connection
                 for j in range(1, self.max_synapses):

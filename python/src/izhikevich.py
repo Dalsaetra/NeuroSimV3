@@ -67,8 +67,8 @@ class NeuronState:
         dV = (self.k * (self.V - self.Vr) * (self.V - self.Vt) - self.u + I + self.bias)/self.C
         du = self.a * (self.b * (self.V - self.Vr) - self.u)
 
-        self.V += dt * dV
-        self.u += dt * du
+        self.V += np.clip(dt * dV, -100, 100)
+        self.u += np.clip(dt * du, -100, 100)
 
         spike_prob = dt * np.exp((self.V - self.Vpeak) / self.delta_V)
         spike_rand = np.random.rand(self.n_neurons)
@@ -90,8 +90,8 @@ class NeuronState:
         dV = (self.k * (self.V - self.Vr) * (self.V - self.Vt) - self.u + I + self.bias)/self.C
         du = self.a * (self.b * (self.V - self.Vr) - self.u)
 
-        self.V += dt * dV
-        self.u += dt * du
+        self.V += np.clip(dt * dV, -100, 100)
+        self.u += np.clip(dt * du, -100, 100)
 
         spike = self.V >= self.Vpeak
 
@@ -105,8 +105,9 @@ class NeuronState:
         dV = (self.k * (self.V - self.Vr) * (self.V - self.Vt) - self.u + I + self.bias)/self.C
         du = self.a * (self.b * (self.V - self.Vr) - self.u)
 
-        self.V += dt * dV
-        self.u += dt * du
+
+        self.V += np.clip(dt * dV, -100, 100)
+        self.u += np.clip(dt * du, -100, 100)
 
         eff_threshold = self.Vpeak + self.T
 
@@ -131,8 +132,8 @@ class NeuronState:
         dV = (self.k * (self.V - self.Vr) * (self.V - self.Vt) - self.u + I + self.bias)/self.C
         du = self.a * (self.b * (self.V - self.Vr) - self.u)
 
-        self.V += dt * dV
-        self.u += dt * du
+        self.V += np.clip(dt * dV, -100, 100)
+        self.u += np.clip(dt * du, -100, 100)
 
         eff_threshold = self.Vpeak + self.T
 
