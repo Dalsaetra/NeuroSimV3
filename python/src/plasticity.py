@@ -277,10 +277,10 @@ class T_STDP:
 
 
 class PredictiveCoding:
-    def __init__(self, connectome: Connectome, dt, A=0.0001, tau_activity=1000.0, gaba_factor=-0.0):
+    def __init__(self, connectome: Connectome, dt, A=0.0001, tau_activity=1000.0, gaba_factor=-0.0, mirror_neurons=[]):
         """
         Predictive Coding class to represent the predictive coding mechanism.
-
+        mirror_neurons: Optional list of tuples (i,j) that note that the expected activity of neuron j is the activity of neuron i
         """
         self.connectome = connectome
 
@@ -291,6 +291,8 @@ class PredictiveCoding:
         self.dt = dt
 
         self.smoothact = SmoothActivity(self.connectome.neuron_population.n_neurons, tau_activity, dt)
+
+        self.mirror_neurons = mirror_neurons
 
         # self.activity_trace = np.zeros(self.connectome.neuron_population.n_neurons, dtype=np.float32)  # Pre-synaptic spike traces
         # self.decay_pre = np.exp(-dt / tau_activity)
@@ -312,6 +314,10 @@ class PredictiveCoding:
 
         # Expected activity
         mu = np.bincount(self.connectome.M.ravel(), weights=wx.ravel(), minlength=self.connectome.M.shape[0])
+
+        for i, j in self.mirror_neurons:
+            # mu[j] = self.activity_trace[i]
+            self.activity_trace[j] = self.activity_trace[i]  # Set the expected activity of neuron j to the activity of neuron i
 
         # Calculate error
         error = self.activity_trace - mu

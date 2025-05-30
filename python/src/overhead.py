@@ -26,8 +26,8 @@ class Simulation:
         self.neuron_states = NeuronState(connectome.neuron_population.neuron_population.T, stepper_type=stepper_type, state0=state0)
         self.integrator = InputIntegration(self.synapse_dynamics)
         # self.plasticity = STDP(connectome, self.dt)
-        self.plasticity = T_STDP(connectome, self.dt)
-        # self.plasticity = PredictiveCoding(connectome, self.dt)
+        # self.plasticity = T_STDP(connectome, self.dt)
+        self.plasticity = PredictiveCoding(connectome, self.dt)
         # self.plasticity = PredictiveCodingSaponati(connectome, self.dt)
 
         self.stats = SimulationStats()

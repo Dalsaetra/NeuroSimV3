@@ -2,11 +2,12 @@ import numpy as np
 from synapse_dynamics import SynapseDynamics
 
 class InputIntegration:
-    def __init__(self, synapse_dynamics: SynapseDynamics):
+    def __init__(self, synapse_dynamics: SynapseDynamics, noise=100):
         """
         InputIntegration class to represent the input integration of a neuron population.
         """
         self.synapse_dynamics = synapse_dynamics
+        self.noise = noise
 
     def __call__(self, neurons_V, I_ext=None):
         """
@@ -18,4 +19,7 @@ class InputIntegration:
         # Add the external input if provided
         if I_ext is not None:
             I_syn += I_ext
+        if self.noise > 0:
+            # Add noise to the synaptic input
+            I_syn += np.random.normal(0, self.noise, size=I_syn.shape)
         return I_syn
