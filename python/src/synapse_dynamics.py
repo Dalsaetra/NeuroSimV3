@@ -41,7 +41,7 @@ def _syn_current_numba(neurons_V,
 
 class SynapseDynamics:
     def __init__(self, connectome: Connectome, dt, tau_AMPA=5, tau_NMDA=150, tau_GABA_A=6, tau_GABA_B=150,
-                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, LT_scale = 1.0, weight_mult = 3.0):
+                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, LT_scale = 1.0, weight_mult = 7.0):
         """
         SynapseDynamics class to represent the synaptic dynamics of a neuron population.
         """
