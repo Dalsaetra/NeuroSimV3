@@ -1,8 +1,10 @@
+# connectome_visualization.py
 import numpy as np
 import networkx as nx
 
 ######################################################################
-# 1.  Convert the matrices (M, NC, W) in a Connectome into a DiGraph #
+# 1.  Convert the matrices (M, NC, W, distances) in a Connectome into #
+#     a DiGraph, adding 'distance' as an edge attribute.            #
 ######################################################################
 
 def connectome_to_nx(connectome,
@@ -17,11 +19,14 @@ def connectome_to_nx(connectome,
 
     Returns
     -------
-    G : networkx.DiGraph  with useful node/edge attributes set
+    G : networkx.DiGraph  with node and edge attributes set, including:
+          - 'weight' (if include_weights is True)
+          - 'synapse_index'
+          - 'distance'  (pulled from connectome.distances)
     """
-    pop      = connectome.neuron_population
-    M, NC, W = connectome.M, connectome.NC, connectome.W
-    distances = connectome.distances
+    pop        = connectome.neuron_population
+    M, NC, W   = connectome.M, connectome.NC, connectome.W
+    D          = connectome.distances  # distances[i,j] was built in build_distances() :contentReference[oaicite:0]{index=0}
 
     # -------- nodes -------------------------------------------------
     G = nx.DiGraph()
@@ -34,12 +39,17 @@ def connectome_to_nx(connectome,
         )
 
     # -------- edges -------------------------------------------------
-    rows, cols = np.where(~NC)     # only where a connection exists
+    rows, cols = np.where(~NC)  # wherever NC[i,j] is False, there is a real synapse
     for i, j in zip(rows, cols):
-        k = int(M[i, j])           # postsynaptic neuron
-        if not include_self_loops and k == i:
+        k = int(M[i, j])         # postsynaptic neuron index
+        if (not include_self_loops) and (k == i):
             continue
-        attrs = {'synapse_index': int(j)}
+
+        # Gather base attributes
+        attrs = {
+            'synapse_index': int(j),
+            'distance': float(D[i, j])  # pull from connectome.distances :contentReference[oaicite:1]{index=1}
+        }
         if include_weights:
             attrs['weight'] = float(W[i, j])
         G.add_edge(i, k, **attrs)
@@ -52,20 +62,34 @@ def connectome_to_nx(connectome,
 ####################################
 
 def quickplot(G,
-              node_size: int = 80,
+              base_node_size: int = 50,
               seed: int = 42,
               figsize=(8, 8)):
     """
     Tiny helper for very small graphs (<~200 nodes).
+
+    Now node sizes ∝ (in_degree + out_degree) of each node.
+    The parameter base_node_size is multiplied by each node’s degree (plus one),
+    so that an isolated node is still visible.
     """
     import matplotlib.pyplot as plt
+
+    # Compute total degree for each node (in + out)
+    deg_dict = dict(G.in_degree())  # in-degree
+    for n, outdeg in G.out_degree():
+        deg_dict[n] = deg_dict.get(n, 0) + outdeg
+
+    # Build a list of node sizes: (degree + 1) * base_node_size
+    node_sizes = [ (deg_dict.get(n, 0) + 1) * base_node_size for n in G.nodes ]
+
+    # Color nodes by layer (fallback to single colour)
     layers = nx.get_node_attributes(G, 'layer')
-    # colour nodes by layer (fallback to single colour)
     colours = [layers.get(n, 0) for n in G.nodes]
+
     pos = nx.spring_layout(G, seed=seed)
     plt.figure(figsize=figsize)
     nx.draw_networkx_nodes(G, pos,
-                           node_size=node_size,
+                           node_size=node_sizes,
                            node_color=colours,
                            cmap=plt.cm.tab20,
                            linewidths=0.1)
@@ -86,11 +110,18 @@ def quickplot(G,
 def interactive(G,
                 html_file: str = "connectome.html",
                 notebook: bool = True,
-                colour_scheme: str = "layer"):
+                colour_scheme: str = "layer",
+                node_size_scale: float = 2.0):
     """
     Write an HTML file you can open in any browser.
 
     colour_scheme = "layer"  |  "inhibitory"
+
+    Nodes sizes are proportional to (in_degree + out_degree) * node_size_scale.
+
+    Edges carry a 'distance' attribute from connectome.distances; we pass this
+    as the 'length' parameter to PyVis so that each spring’s rest-length
+    ≈ the anatomical distance between i→j.
     """
     try:
         from pyvis.network import Network
@@ -100,31 +131,71 @@ def interactive(G,
     net = Network(height="750px", width="100%", directed=True,
                   notebook=notebook, bgcolor="#ffffff")
 
-    # -------- nodes (with colours & tooltips) -----------------------
+    # Compute each node's total degree
+    deg_in  = dict(G.in_degree())
+    deg_out = dict(G.out_degree())
+    total_deg = {n: deg_in.get(n, 0) + deg_out.get(n, 0) for n in G.nodes}
+
+    # -------- nodes (with colours, tooltips, and dynamic sizes) ----------
     import matplotlib.colors as mcolors
     palette = list(mcolors.TABLEAU_COLORS.values()) + list(mcolors.CSS4_COLORS.values())
     layers = nx.get_node_attributes(G, 'layer')
     inhib  = nx.get_node_attributes(G, 'inhibitory')
 
     for n in G.nodes:
+        # Determine color
         if colour_scheme == "inhibitory":
             color = "#d62728" if inhib[n] else "#1f77b4"
-        else:                           # by layer (default)
+        else:  # by layer (default)
             color = palette[layers[n] % len(palette)]
-        title = (f"Neuron {n}<br/>Layer: {layers[n]}<br/>"
-                 f"{'Inhibitory' if inhib[n] else 'Excitatory'}<br/>"
-                 f"Template: {G.nodes[n]['ntype']}")
-        net.add_node(n, label=str(n), title=title, color=color)
 
-    # -------- edges -------------------------------------------------
+        # Build hover title
+        title = (
+            f"Neuron {n}<br/>"
+            f"Layer: {layers[n]}<br/>"
+            f"{'Inhibitory' if inhib[n] else 'Excitatory'}<br/>"
+            f"Template: {G.nodes[n]['ntype']}<br/>"
+            f"InDegree: {deg_in.get(n, 0)}<br/>OutDegree: {deg_out.get(n, 0)}"
+        )
+
+        # Size = (total_degree + 1) * node_size_scale
+        size = (total_deg.get(n, 0) + 1) * node_size_scale
+
+        net.add_node(n,
+                     label=str(n),
+                     title=title,
+                     color=color,
+                     size=size)
+
+    # -------- edges ------------
     for u, v, data in G.edges(data=True):
-        weight = abs(data.get("weight", 1.0))
-        net.add_edge(u, v,
-                     value=weight,         # edge thickness
-                     title=f"w = {weight:.3f}")
+        w = data.get("weight", None)
+        syn_idx = data.get("synapse_index", None)
+        dist = data.get("distance", None)  # anatomical distance
+        # If distance is missing or zero, fallback to a small positive default
+        length = float(dist) if (dist is not None and dist > 0.0) else 50.0
+
+        # Edge thickness ∝ |weight|
+        thickness = abs(w) if w is not None else 1.0
+
+        hover_txt = []
+        if syn_idx is not None:
+            hover_txt.append(f"synapse_index = {syn_idx}")
+        if w is not None:
+            hover_txt.append(f"weight = {w:.3f}")
+        if dist is not None:
+            hover_txt.append(f"distance = {dist:.2f}")
+
+        net.add_edge(
+            u,
+            v,
+            value   = thickness * 0.1,         # edge thickness ∝ |weight|
+            title   = "<br/>".join(hover_txt),
+            length  = length              # rest‐length ≈ anatomical distance
+        )
 
     net.show(html_file)
-    print(f"Saved interactive graph to {html_file}")
+    print(f"✅  Saved interactive graph to {html_file}")
 
 
 ############################
@@ -143,6 +214,7 @@ if __name__ == "__main__":
     layer_distances    = np.zeros((2, 2))
     pop  = NeuronPopulation(neurons_per_layer,
                              neuron_distribution,
+                             layer_distances,
                              neuron_types,
                              inhibitory,
                              threshold_decay=0.99)
@@ -155,7 +227,10 @@ if __name__ == "__main__":
                      neuron_population=pop,
                      connectivity_probability=conn_prob,
                      synapse_strengths=syn_str)
+    # At this point, con.distances was populated via build_distances() :contentReference[oaicite:2]{index=2}
 
-    G = connectome_to_nx(con)
-    quickplot(G)              # small static preview
-    interactive(G)            # full interactive HTML
+    G = connectome_to_nx(con)            # build the graph (with distances & weights)
+    quickplot(G)                         # static preview (node sizes ∝ degree)
+    interactive(G, "my_net.html")        # interactive HTML:
+                                          #   - edge lengths ≈ con.distances[i,j]
+                                          #   - node sizes ∝ (in_degree + out_degree)
