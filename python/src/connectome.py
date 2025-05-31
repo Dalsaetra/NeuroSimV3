@@ -33,7 +33,6 @@ class Connectome:
         
 
         self.build_connectome()
-        self.build_receivers()
         self.build_distances()
 
         # Invert NC
@@ -117,7 +116,7 @@ class Connectome:
 
             autaptic_drawn = False
             for j in range(self.max_synapses):
-                # First draw if we have an autoptic connection
+                # First draw if we have an autaptic connection
                 if not autaptic_drawn:
                     autaptic_drawn = True
                     # Autaptic connection probability
@@ -140,20 +139,7 @@ class Connectome:
                     # NOTE that this allows for multiple connections to the same neuron
                     self.set_connection(i, j, target_neuron, self.get_random_weight(layer, self.neuron_population.get_layer(target_neuron)))
 
-    def build_receivers(self):
-        """
-        Build the receivers for the connectome.
-        """
-        # Build the receivers for the connectome
-        self.receivers = np.zeros((self.neuron_population.n_neurons, self.neuron_population.n_neurons, self.max_synapses), dtype=bool)
-        for i in range(self.neuron_population.n_neurons):
-            # Get where neuron i is downstream
-            self.receivers[i][self.M == i] = True
-
-        # mask_f32 = self.receivers.astype(np.float32)
-        # self.receivers2d = mask_f32.reshape(self.neuron_population.n_neurons, -1)
-        self.receivers = self.receivers.astype(np.float32)  # Convert to float32 for compatibility with other operations
-
+    
     def build_distances(self):
         """
         Build the distances between neurons in the connectome.
@@ -167,3 +153,25 @@ class Connectome:
                     layer_j = self.neuron_population.get_layer(self.M[i, j])
                     # Get the distance from distance matrix, in mm
                     self.distances[i, j] = self.neuron_population.layer_distances[layer_i, layer_j] + np.random.normal(0, 0.2)
+
+
+    def connections_per_neuron(self):
+        """
+        Get the number of connections per neuron in the connectome.
+        
+        Returns:
+        array, shape (n_neurons,), number of connections per neuron
+        """
+        # Count the number of connections per neuron
+        # Outward connections are the number of downstream synapses
+        outward_connections = np.sum(~self.NC, axis=1)
+        # Inward connections are the number of upstream synapses, must use M to count them
+        inward_connections = np.zeros(self.neuron_population.n_neurons, dtype=int)
+        for i in range(self.neuron_population.n_neurons):
+            inward_connections[self.M[i, :]] += 1
+            # Minus the NC
+            inward_connections[self.M[i, self.NC[i, :]]] -= 1
+
+        total_connections = outward_connections + inward_connections
+
+        return outward_connections, inward_connections, total_connections
