@@ -2,8 +2,8 @@ import numpy as np
 from neuron_templates import neuron_type_IZ
 
 class NeuronPopulation:
-    def __init__(self, neurons_per_layer, neuron_distribution, layer_distances, neuron_types, 
-                 inhibitory, threshold_decay, delta_V=2.5, bias=0.0, threshold_mult=1.05, n_params=13):
+    def __init__(self, neurons_per_layer, neuron_distribution, neuron_types, 
+                 inhibitory, threshold_decay, layer_distances=None, delta_V=2.5, bias=0.0, threshold_mult=1.05, n_params=13):
         """
         neurons_per_layer: list of integers, number of neurons in each layer
         neuron_distribution: list with length neurons_per_layer of np.arrays of length neuron_types, probabilities of each neuron type in each layer
@@ -31,6 +31,10 @@ class NeuronPopulation:
         self.layer_indices = []
 
         self.populate(threshold_decay, delta_V, bias, threshold_mult)
+
+        if self.layer_distances is None:
+            # If no layer distances are provided, build a linear distance matrix
+            self.build_linear_layerdistance_matrix()
 
         # Weight inhibitory mask, 1 for excitatory, -1 for inhibitory
         self.weight_inhibitory_mask = np.where(self.inhibitory_mask, -1, 1)
@@ -109,3 +113,21 @@ class NeuronPopulation:
         Get the neuron types from a layer given its index
         """
         return np.array(self.neuron_population_types)[self.get_neurons_from_layer(layer)]
+
+
+    def build_linear_layerdistance_matrix(self, inter_distance=0.6, layer_distance=5.0):
+        """
+        Build a linear distance matrix for the neuron population.
+        inter_distance: distance between neurons in the same layer
+        layer_distance: distance between layers
+        """
+        self.layer_distances = np.zeros((self.n_layers, self.n_layers))
+
+        for i in range(self.n_layers):
+            for j in range(self.n_layers):
+                if i == j:
+                    self.layer_distances[i, j] = inter_distance 
+                else:
+                    self.layer_distances[i, j] = layer_distance * abs(i - j)
+
+
