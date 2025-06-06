@@ -3,13 +3,14 @@ from neuron_templates import neuron_type_IZ
 
 class NeuronPopulation:
     def __init__(self, neurons_per_layer, neuron_distribution, neuron_types, 
-                 inhibitory, threshold_decay, layer_distances=None, delta_V=2.5, bias=0.0, threshold_mult=1.05, n_params=13):
+                 inhibitory, threshold_decay, layer_distances=None, delta_V=2.5, 
+                 bias=0.0, threshold_mult=1.05, n_params=13, auto_populate=True):
         """
         neurons_per_layer: list of integers, number of neurons in each layer
         neuron_distribution: list with length neurons_per_layer of np.arrays of length neuron_types, probabilities of each neuron type in each layer
         layer_distances: matrix of distances between layers, shape (n_layers, n_layers)
         neuron_types: list of neuron types (string), keys for types in neuron_templates.py
-        inhibitory: list of booleans, True if the neuron is inhibitory, False if it is excitatory, shape as neuron_types
+        inhibitory: list of booleans, True if the neuron type is inhibitory, False if it is excitatory, shape as neuron_types
         n_params: number of parameters for each neuron, default is 13 (k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V, bias, threshold_mult, threshold_decay)
         """
 
@@ -19,7 +20,6 @@ class NeuronPopulation:
         self.neuron_types = neuron_types
         self.inhibitory = inhibitory
         self.n_params = n_params
-        self.n_neuron_types = len(neuron_types)
 
         # Initialize the neuron population
         self.n_layers = len(neurons_per_layer)
@@ -30,11 +30,13 @@ class NeuronPopulation:
         self.neuron_population_types = []
         self.layer_indices = []
 
-        self.populate(threshold_decay, delta_V, bias, threshold_mult)
+        if auto_populate:
+            self.populate(threshold_decay, delta_V, bias, threshold_mult)
+            self.n_neuron_types = len(neuron_types)
+            if self.layer_distances is None:
+                # If no layer distances are provided, build a linear distance matrix
+                self.build_linear_layerdistance_matrix()
 
-        if self.layer_distances is None:
-            # If no layer distances are provided, build a linear distance matrix
-            self.build_linear_layerdistance_matrix()
 
         # Weight inhibitory mask, 1 for excitatory, -1 for inhibitory
         self.weight_inhibitory_mask = np.where(self.inhibitory_mask, -1, 1)

@@ -4,7 +4,8 @@ import networkx as nx
 import matplotlib.pyplot as plt
 
 class Connectome:
-    def __init__(self, max_synapses, neuron_population: NeuronPopulation, connectivity_probability, synapse_strengths):
+    def __init__(self, max_synapses, neuron_population: NeuronPopulation, connectivity_probability, synapse_strengths=None,
+                 autobuild=True):
         """
         Connectome class to represent the connectivity between neurons in a population.
         
@@ -15,13 +16,15 @@ class Connectome:
         synapse_strengths: array of synapse weight scale, shape (n_layers, n_layers)
         """
         assert max_synapses <= neuron_population.n_neurons, "max_synapses must be less than or equal to the number of neurons in the population."
-        assert len(connectivity_probability.shape) == 4, "connectivity_probability must be a 4D array."
-        assert len(synapse_strengths.shape) == 2, "synapse_strengths must be a 2D array."
 
         self.max_synapses = max_synapses
         self.neuron_population = neuron_population
         self.connectivity_probability = connectivity_probability
         self.synapse_strengths = synapse_strengths
+
+        if self.synapse_strengths is None:
+            # If no synapse strengths are provided, use a default value of 1.0
+            self.synapse_strengths = np.ones((self.neuron_population.n_layers, self.neuron_population.n_layers))
 
         # Connectivity matrix
         # M[i, j] = k, k is the neuron index where the jth axon of the ith neuron ends up
@@ -32,14 +35,19 @@ class Connectome:
 
         # No-connection matrix
         self.NC = np.zeros((self.neuron_population.n_neurons, max_synapses), dtype=bool)
-        
 
-        self.build_connectome()
-        self.build_distances()
-        self.build_nx()
+        # Dendritic markers
+        self.dendritic = np.zeros((self.neuron_population.n_neurons, max_synapses), dtype=bool)
+
+        if autobuild:
+            assert len(connectivity_probability.shape) == 4, "connectivity_probability must be a 4D array."
+            assert len(synapse_strengths.shape) == 2, "synapse_strengths must be a 2D array."
+            self.build_connectome()
+            self.build_distances()
+            self.build_nx()
 
         # Invert NC
-        self.NC_invert = ~self.NC
+        # self.NC_invert = ~self.NC
 
     def set_connection(self, i, j, k, w = None):
         """
@@ -71,6 +79,18 @@ class Connectome:
         # Ensure the weight is positive
         weight = max(weight, 0.0)
         return weight
+    
+    def set_random_weights(self):
+        """
+        Set random weights for all connections in the connectome.
+        """
+        for i in range(self.neuron_population.n_neurons):
+            layer_from = self.neuron_population.get_layer(i)
+            for j in range(self.max_synapses):
+                if not self.NC[i, j]:
+                    layer_to = self.neuron_population.get_layer(self.M[i, j])
+                    self.W[i, j] = self.get_random_weight(layer_from, layer_to)
+
 
     def build_connectome(self):
         """
@@ -252,7 +272,7 @@ class Connectome:
 
         self.G = G
 
-    def evaluate_small_world(self):
+    def evaluate_small_world(self, legend=True):
         """
         Evaluate the small-world properties of the connectome.
         
@@ -269,7 +289,6 @@ class Connectome:
         self.C_G = nx.average_clustering(self.G_cc)
         self.T_G = nx.transitivity(self.G_cc)
 
-        # --- 6. Path lengths & diameter
         self.L_G = nx.average_shortest_path_length(self.G_cc)
         self.diam_G = nx.diameter(self.G_cc)
 
@@ -281,7 +300,22 @@ class Connectome:
         L_R = nx.average_shortest_path_length(R)
         self.sigma  = (self.C_G / C_R) / (self.L_G / L_R)
 
-        return self.sigma
+        # Find small-world measure omega as well
+        # Need to find C_lattice, which is the clustering coefficient of a regular lattice of the same size
+        # Use a ring lattice (watts_strogatz_graph with p=0) with average degree similar to our graph
+        k = int(2 * m_cc / n_cc)  # Average degree
+        k = max(k, 4)  # Ensure k is at least 4 for meaningful clustering
+        k = min(k, n_cc - 1)  # Ensure k doesn't exceed n-1
+        lattic_graph = nx.watts_strogatz_graph(n=n_cc, k=k, p=0)  # p=0 makes it a pure ring lattice
+        C_lattice = nx.average_clustering(lattic_graph)
+
+        self.omega = L_R / self.L_G - self.C_G / C_lattice 
+
+        if legend:
+            print(f"Sigma (small-world if > 1): {self.sigma:.4f}")
+            print(f"Omega (small-world if close to 0): {self.omega:.4f}")
+
+        return self.sigma, self.omega
 
     def quickplot(self, base_node_size: int = 50, figsize=(8, 8)):
         """

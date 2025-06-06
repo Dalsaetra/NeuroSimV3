@@ -277,7 +277,7 @@ class T_STDP:
 
 
 class PredictiveCoding:
-    def __init__(self, connectome: Connectome, dt, A=0.001, tau_activity=1000.0, gaba_factor=-0.0, mirror_neurons=[]):
+    def __init__(self, connectome: Connectome, dt, A=0.001, tau_activity=1000.0, gaba_factor=1.0, mirror_neurons=[]):
         """
         Predictive Coding class to represent the predictive coding mechanism.
         mirror_neurons: Optional list of tuples (i,j) that note that the expected activity of neuron j is the activity of neuron i
@@ -327,12 +327,13 @@ class PredictiveCoding:
 
         # Set weight changes to zero where no connection is marked
         dw[self.connectome.NC] = 0
+
  
         self.connectome.W += dw
 
 
 class PredictiveCodingSaponati:
-    def __init__(self, connectome: Connectome, dt, A=0.0001, tau_activity=10.0, gaba_factor=-1.0):
+    def __init__(self, connectome: Connectome, dt, A=0.001, tau_activity=10.0, gaba_factor=1.0):
         """
         Predictive Coding class to represent the predictive coding mechanism.
 

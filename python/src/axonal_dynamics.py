@@ -4,7 +4,7 @@ import heapq
 from connectome import Connectome
 
 class AxonalDynamics:
-    def __init__(self, connectome: Connectome, dt, velocity = 1.0):
+    def __init__(self, connectome: Connectome, dt, velocity = 1.0, dendritic_factor = 10.0):
         """
         AxonalDynamics class to represent the axonal dynamics of a neuron population.
         """
@@ -14,6 +14,8 @@ class AxonalDynamics:
 
         self.L = self.connectome.distances
         self.v = velocity
+        self.delays = self.L / self.v
+        self.delays[self.connectome.dendritic] *= dendritic_factor  # Dendritic delays are longer
 
         self._heap: list[tuple[float, int, int]] = []      # (arrival_time, i, j)
 
@@ -25,11 +27,12 @@ class AxonalDynamics:
             return
         ii = np.where(spikes)[0]
         v_vals = self.v
-        delays = t_now + self.L[ii] / v_vals
+        delays = t_now + self.delays[ii, :]  # Delays for the neurons that spiked
         for i in range(len(ii)):
             # NOTE: j is the index of the synapse, not the neuron
             for j in range(self.connectome.max_synapses):
-                heapq.heappush(self._heap, (float(delays[i,j]), int(ii[i]), int(j)))
+                if not self.connectome.NC[ii[i], j]:
+                    heapq.heappush(self._heap, (float(delays[i,j]), int(ii[i]), int(j)))
 
     def check(self, t_now):
         arrived = []
