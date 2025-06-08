@@ -277,7 +277,7 @@ class T_STDP:
 
 
 class PredictiveCoding:
-    def __init__(self, connectome: Connectome, dt, A=0.001, tau_activity=1000.0, gaba_factor=1.0, mirror_neurons=[]):
+    def __init__(self, connectome: Connectome, dt, A=0.00001, tau_activity=1000.0, gaba_factor=1.0, mirror_neurons=[]):
         """
         Predictive Coding class to represent the predictive coding mechanism.
         mirror_neurons: Optional list of tuples (i,j) that note that the expected activity of neuron j is the activity of neuron i
