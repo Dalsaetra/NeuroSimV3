@@ -4,7 +4,7 @@ import heapq
 from connectome import Connectome
 
 class AxonalDynamics:
-    def __init__(self, connectome: Connectome, dt, velocity = 1.0, dendritic_factor = 10.0):
+    def __init__(self, connectome: Connectome, dt, velocity = 0.25, dendritic_factor = 10.0):
         """
         AxonalDynamics class to represent the axonal dynamics of a neuron population.
         """
@@ -33,6 +33,7 @@ class AxonalDynamics:
             for j in range(self.connectome.max_synapses):
                 if not self.connectome.NC[ii[i], j]:
                     heapq.heappush(self._heap, (float(delays[i,j]), int(ii[i]), int(j)))
+                    # print("delay: ", delays[i,j] - t_now, "i:", ii[i], "j:", self.connectome.M[ii[i], j], "weight:", self.connectome.W[ii[i], j])
 
     def check(self, t_now):
         arrived = []

@@ -69,7 +69,7 @@ def phase1_spatial_growth(N, layer_bounds, layer_densities, max_synapses, alpha_
 
 
 def phase2_spatial_growth(G, coords, neurons_per_layer, max_synapses, 
-                          flow, type_distribution, alpha_type_local, alpha_type_global, global_excit_hub_percentage=0.5,
+                          flow, type_distributions, alpha_type_local, alpha_type_global, global_excit_hub_percentage=0.5,
                           thalamus_layer=None, autapse_prob=[0.8, 0.0, 0.0, 1.0]):
     """
     Phase 2: differentiate neuron types, make sure all neurons have 1 in-degree and 1 out-degree,
@@ -80,7 +80,7 @@ def phase2_spatial_growth(G, coords, neurons_per_layer, max_synapses,
     neurons_per_layer: number of neurons in each layer
     max_synapses: max local out-degree per neuron
     flow: flow vector for long-range connections, shape (3,)
-    type_distribution: number distribution of neuron types 
+    type_distributions: number distribution of neuron types 
         (global_excit, local_excit, global_inhib, local_inhib), shape (4,)
     alpha_type_local: distance scale parameters for each type, locally, shape (4,)
     alpha_type_global: distance scale parameters for each type, globally, shape (4,)
@@ -92,92 +92,115 @@ def phase2_spatial_growth(G, coords, neurons_per_layer, max_synapses,
         thalamus_idx = np.arange(start, end)
 
     n_neurons = G.number_of_nodes()
+    n_layers = len(neurons_per_layer)
 
     alpha_local_inhib = alpha_type_local[3]
 
     # Build KDTree for fast neighbor queries
     tree = cKDTree(coords)
 
-    # if len(type_distribution.shape) == 1:
-    #     # If type_distribution is a 1D array, convert it to a 2D array
-    #     type_distribution = np.array([type_distribution])
+    if len(type_distributions.shape) == 1:
+        # If type_distribution is a 1D array, convert it to a 2D array
+        type_distributions = np.array([type_distributions])
+        global_dist = True
+    else:
+        global_dist = False
+        assert len(type_distributions) == n_layers, "type_distributions must be a 1D or 2D array"
 
-    # for i in range(len(type_distribution)):
 
-    # Normalize type distribution
-    type_distribution = np.array(type_distribution)
-    type_distribution /= np.sum(type_distribution)
-
-    # Number of neurons per type
-    number_distribution = (type_distribution * n_neurons).astype(int)
-
-    # If the sum of number_distribution is less/greater than n_neurons,
-    # we can add/remove the remaining neurons from a random type
-    number_error =  n_neurons - np.sum(number_distribution)
-    if number_error > 0:
-        for _ in range(number_error):
-            # Randomly add one neuron to a random type
-            idx = np.random.choice(np.arange(len(number_distribution)))
-            number_distribution[idx] += 1
-    elif number_error < 0:
-        for _ in range(-number_error):
-            # Randomly remove one neuron from a random type
-            idx = np.random.choice(np.arange(len(number_distribution)))
-            if number_distribution[idx] > 0:
-                number_distribution[idx] -= 1
-
-    # --- Distribute neurons into types according to the type_distribution ---
-
-    # Find the neuron with the highest in+out degree
-    max_deg_neuron = max(G.nodes, key=lambda n: G.in_degree(n) + G.out_degree(n))
-
-    global_excit_min_connections = int(global_excit_hub_percentage * max_deg_neuron)
-
-    # Sort neurons by their total degree (in + out)
-    nodes_shuffled = list(G.nodes)
-    np.random.shuffle(nodes_shuffled)
-    sorted_neurons = sorted(nodes_shuffled, key=lambda n: G.in_degree(n) + G.out_degree(n), reverse=True)
-
-    # Filter out the neurons that have less than global_excit_min_connections
-    global_excit_neurons = [n for n in sorted_neurons if G.in_degree(n) + G.out_degree(n) >= global_excit_min_connections]
-
-    global_excit_error = len(global_excit_neurons) - number_distribution[0]
-
-    if global_excit_error > 0:
-        # Too many global excitatory neurons, remove global_excit_error of the least connected ones
-        global_excit_neurons = global_excit_neurons[:-global_excit_error] 
-
-    # Add the least connected neurons to local inhibitory neurons
-    local_inhib_neurons = sorted_neurons[-number_distribution[3]:]
-
-    # Find the remaining indices that is not in global_excit_neurons or local_inhib_neurons
-    remaining_neurons = [n for n in sorted_neurons if n not in global_excit_neurons and n not in local_inhib_neurons]
-
-    # Find what number of types we have left to fill
-    remaining_types = number_distribution.copy()
-    remaining_types[0] -= len(global_excit_neurons)
-    remaining_types[3] -= len(local_inhib_neurons)
-    # Now we can fill the remaining types with the remaining neurons randomly
+    global_excit_neurons = []
     local_excit_neurons = []
     global_inhib_neurons = []
-    # Shuffle the remaining neurons to randomize the selection
-    np.random.shuffle(remaining_neurons)
-    for n in remaining_neurons:
-        if remaining_types[1] > 0:
-            local_excit_neurons.append(n)
-            remaining_types[1] -= 1
-        elif remaining_types[2] > 0:
-            global_inhib_neurons.append(n)
-            remaining_types[2] -= 1
-        elif remaining_types[0] > 0:
-            global_excit_neurons.append(n)
-            remaining_types[0] -= 1
+    local_inhib_neurons = []
 
-    assert len(global_excit_neurons) == number_distribution[0], "Global excitatory neurons count mismatch"
-    assert len(local_excit_neurons) == number_distribution[1], "Local excitatory neurons count mismatch"
-    assert len(global_inhib_neurons) == number_distribution[2], "Global inhibitory neurons count mismatch"
-    assert len(local_inhib_neurons) == number_distribution[3], "Local inhibitory neurons count mismatch"
-    assert G.number_of_nodes() == sum(number_distribution), "Total number of neurons mismatch"
+    for i, type_distribution in enumerate(type_distributions):
+
+        # Normalize type distribution
+        type_distribution = np.array(type_distribution)
+        type_distribution /= np.sum(type_distribution)
+
+        # Number of neurons per type
+        number_distribution = (type_distribution * neurons_per_layer[i]).astype(int)
+
+        # If the sum of number_distribution is less/greater than n_neurons,
+        # we can add/remove the remaining neurons from a random type
+        number_error =  neurons_per_layer[i] - np.sum(number_distribution)
+        if number_error > 0:
+            for _ in range(number_error):
+                # Randomly add one neuron to a random type
+                idx = np.random.choice(np.arange(len(number_distribution)))
+                number_distribution[idx] += 1
+        elif number_error < 0:
+            for _ in range(-number_error):
+                # Randomly remove one neuron from a random type
+                idx = np.random.choice(np.arange(len(number_distribution)))
+                if number_distribution[idx] > 0:
+                    number_distribution[idx] -= 1
+
+        # --- Distribute neurons into types according to the type_distribution ---
+
+        if global_dist:
+            G_layer_subgraph = G
+        else:
+            G_layer_subgraph = G.subgraph(range(np.sum(neurons_per_layer[:i]), np.sum(neurons_per_layer[:i+1])))
+
+        # Find the neuron with the highest in+out degree
+        max_deg_neuron = max(G_layer_subgraph.nodes, key=lambda n: G_layer_subgraph.in_degree(n) + G_layer_subgraph.out_degree(n))
+
+        global_excit_min_connections = int(global_excit_hub_percentage * max_deg_neuron)
+
+        # Sort neurons by their total degree (in + out)
+        nodes_shuffled = list(G_layer_subgraph.nodes)
+        np.random.shuffle(nodes_shuffled)
+        sorted_neurons = sorted(nodes_shuffled, key=lambda n: G_layer_subgraph.in_degree(n) + G_layer_subgraph.out_degree(n), reverse=True)
+
+        # Filter out the neurons that have less than global_excit_min_connections
+        global_excit_neurons_layer = [n for n in sorted_neurons if G_layer_subgraph.in_degree(n) + G_layer_subgraph.out_degree(n) >= global_excit_min_connections]
+
+        global_excit_error = len(global_excit_neurons_layer) - number_distribution[0]
+
+        if global_excit_error > 0:
+            # Too many global excitatory neurons, remove global_excit_error of the least connected ones
+            global_excit_neurons_layer = global_excit_neurons_layer[:-global_excit_error] 
+
+        # Add the least connected neurons to local inhibitory neurons
+        local_inhib_neurons_layer = sorted_neurons[-number_distribution[3]:]
+
+        # Find the remaining indices that is not in global_excit_neurons_layer or local_inhib_neurons_layer
+        remaining_neurons = [n for n in sorted_neurons if n not in global_excit_neurons_layer and n not in local_inhib_neurons_layer]
+
+        # Find what number of types we have left to fill
+        remaining_types = number_distribution.copy()
+        remaining_types[0] -= len(global_excit_neurons_layer)
+        remaining_types[3] -= len(local_inhib_neurons_layer)
+        # Now we can fill the remaining types with the remaining neurons randomly
+        local_excit_neurons_layer = []
+        global_inhib_neurons_layer = []
+        # Shuffle the remaining neurons to randomize the selection
+        np.random.shuffle(remaining_neurons)
+        for n in remaining_neurons:
+            if remaining_types[1] > 0:
+                local_excit_neurons_layer.append(n)
+                remaining_types[1] -= 1
+            elif remaining_types[2] > 0:
+                global_inhib_neurons_layer.append(n)
+                remaining_types[2] -= 1
+            elif remaining_types[0] > 0:
+                global_excit_neurons_layer.append(n)
+                remaining_types[0] -= 1
+
+        print(len(global_excit_neurons_layer), sum(number_distribution))
+        assert len(global_excit_neurons_layer) == number_distribution[0], "Global excitatory neurons count mismatch"
+        assert len(local_excit_neurons_layer) == number_distribution[1], "Local excitatory neurons count mismatch"
+        assert len(global_inhib_neurons_layer) == number_distribution[2], "Global inhibitory neurons count mismatch"
+        assert len(local_inhib_neurons_layer) == number_distribution[3], "Local inhibitory neurons count mismatch"
+        # assert G.number_of_nodes() == sum(number_distribution), "Total number of neurons mismatch"
+
+        # Add the neurons to the global lists
+        global_excit_neurons.extend(global_excit_neurons_layer)
+        local_excit_neurons.extend(local_excit_neurons_layer)
+        global_inhib_neurons.extend(global_inhib_neurons_layer)
+        local_inhib_neurons.extend(local_inhib_neurons_layer)
     
     # Add type as data to each node
     for n in global_excit_neurons:
