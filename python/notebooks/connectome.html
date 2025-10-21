@@ -1,0 +1,163 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        
+            <script src="lib/bindings/utils.js"></script>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/dist/vis-network.min.css" integrity="sha512-WgxfT5LWjfszlPHXRmBWHkV2eceiWTOBvrKCNbdgDYTHrT2AeLCGbF4sZlZw3UMN3WtL0tGUoIAKsu8mllg/XA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js" integrity="sha512-LnvoEWDFrqGHlHmDD2101OrLcbsfkrzoSpvtSQtxK3RMnRV0eOkhhBN2dXHKRrUU8p2DGRTk35n4O8nWSVe1mQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+            
+        
+<center>
+<h1></h1>
+</center>
+
+<!-- <link rel="stylesheet" href="../node_modules/vis/dist/vis.min.css" type="text/css" />
+<script type="text/javascript" src="../node_modules/vis/dist/vis.js"> </script>-->
+        <link
+          href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css"
+          rel="stylesheet"
+          integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6"
+          crossorigin="anonymous"
+        />
+        <script
+          src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js"
+          integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
+          crossorigin="anonymous"
+        ></script>
+
+
+        <center>
+          <h1></h1>
+        </center>
+        <style type="text/css">
+
+             #mynetwork {
+                 width: 100%;
+                 height: 750px;
+                 background-color: #ffffff;
+                 border: 1px solid lightgray;
+                 position: relative;
+                 float: left;
+             }
+
+             
+
+             
+
+             
+        </style>
+    </head>
+
+
+    <body>
+        <div class="card" style="width: 100%">
+            
+            
+            <div id="mynetwork" class="card-body"></div>
+        </div>
+
+        
+        
+
+        <script type="text/javascript">
+
+              // initialize global variables.
+              var edges;
+              var nodes;
+              var allNodes;
+              var allEdges;
+              var nodeColors;
+              var originalNodes;
+              var network;
+              var container;
+              var options, data;
+              var filter = {
+                  item : '',
+                  property : '',
+                  value : []
+              };
+
+              
+
+              
+
+              // This method is responsible for drawing the graph, returns the drawn network
+              function drawGraph() {
+                  var container = document.getElementById('mynetwork');
+
+                  
+
+                  // parsing and collecting nodes and edges from the python
+                  nodes = new vis.DataSet([{"color": "#1f77b4", "id": 0, "label": "0", "shape": "dot", "size": 16.0, "title": "Neuron 0\u003cbr/\u003eLayer: 0\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: TRN\u003cbr/\u003eInDegree: 0\u003cbr/\u003eOutDegree: 7"}, {"color": "#1f77b4", "id": 1, "label": "1", "shape": "dot", "size": 20.0, "title": "Neuron 1\u003cbr/\u003eLayer: 0\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: TRN\u003cbr/\u003eInDegree: 0\u003cbr/\u003eOutDegree: 9"}, {"color": "#ff7f0e", "id": 2, "label": "2", "shape": "dot", "size": 38.0, "title": "Neuron 2\u003cbr/\u003eLayer: 1\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: p23\u003cbr/\u003eInDegree: 10\u003cbr/\u003eOutDegree: 8"}, {"color": "#ff7f0e", "id": 3, "label": "3", "shape": "dot", "size": 32.0, "title": "Neuron 3\u003cbr/\u003eLayer: 1\u003cbr/\u003eInhibitory\u003cbr/\u003eTemplate: nb\u003cbr/\u003eInDegree: 7\u003cbr/\u003eOutDegree: 8"}, {"color": "#ff7f0e", "id": 4, "label": "4", "shape": "dot", "size": 32.0, "title": "Neuron 4\u003cbr/\u003eLayer: 1\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: p23\u003cbr/\u003eInDegree: 7\u003cbr/\u003eOutDegree: 8"}, {"color": "#ff7f0e", "id": 5, "label": "5", "shape": "dot", "size": 26.0, "title": "Neuron 5\u003cbr/\u003eLayer: 1\u003cbr/\u003eInhibitory\u003cbr/\u003eTemplate: nb\u003cbr/\u003eInDegree: 7\u003cbr/\u003eOutDegree: 5"}, {"color": "#ff7f0e", "id": 6, "label": "6", "shape": "dot", "size": 42.0, "title": "Neuron 6\u003cbr/\u003eLayer: 1\u003cbr/\u003eInhibitory\u003cbr/\u003eTemplate: nb\u003cbr/\u003eInDegree: 10\u003cbr/\u003eOutDegree: 10"}, {"color": "#ff7f0e", "id": 7, "label": "7", "shape": "dot", "size": 42.0, "title": "Neuron 7\u003cbr/\u003eLayer: 1\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: p23\u003cbr/\u003eInDegree: 10\u003cbr/\u003eOutDegree: 10"}, {"color": "#ff7f0e", "id": 8, "label": "8", "shape": "dot", "size": 30.0, "title": "Neuron 8\u003cbr/\u003eLayer: 1\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: p23\u003cbr/\u003eInDegree: 6\u003cbr/\u003eOutDegree: 8"}, {"color": "#ff7f0e", "id": 9, "label": "9", "shape": "dot", "size": 30.0, "title": "Neuron 9\u003cbr/\u003eLayer: 1\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: p23\u003cbr/\u003eInDegree: 6\u003cbr/\u003eOutDegree: 8"}, {"color": "#ff7f0e", "id": 10, "label": "10", "shape": "dot", "size": 36.0, "title": "Neuron 10\u003cbr/\u003eLayer: 1\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: p23\u003cbr/\u003eInDegree: 9\u003cbr/\u003eOutDegree: 8"}, {"color": "#ff7f0e", "id": 11, "label": "11", "shape": "dot", "size": 40.0, "title": "Neuron 11\u003cbr/\u003eLayer: 1\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: p23\u003cbr/\u003eInDegree: 10\u003cbr/\u003eOutDegree: 9"}, {"color": "#ff7f0e", "id": 12, "label": "12", "shape": "dot", "size": 34.0, "title": "Neuron 12\u003cbr/\u003eLayer: 1\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: p23\u003cbr/\u003eInDegree: 7\u003cbr/\u003eOutDegree: 9"}, {"color": "#ff7f0e", "id": 13, "label": "13", "shape": "dot", "size": 28.0, "title": "Neuron 13\u003cbr/\u003eLayer: 1\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: p23\u003cbr/\u003eInDegree: 7\u003cbr/\u003eOutDegree: 6"}, {"color": "#2ca02c", "id": 14, "label": "14", "shape": "dot", "size": 22.0, "title": "Neuron 14\u003cbr/\u003eLayer: 2\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: TRN\u003cbr/\u003eInDegree: 10\u003cbr/\u003eOutDegree: 0"}, {"color": "#2ca02c", "id": 15, "label": "15", "shape": "dot", "size": 16.0, "title": "Neuron 15\u003cbr/\u003eLayer: 2\u003cbr/\u003eExcitatory\u003cbr/\u003eTemplate: TRN\u003cbr/\u003eInDegree: 7\u003cbr/\u003eOutDegree: 0"}]);
+                  edges = new vis.DataSet([{"arrows": "to", "from": 0, "length": 104.34944321231903, "title": "synapse_index = 7\u003cbr/\u003eweight = 0.215\u003cbr/\u003edistance = 5.22", "to": 10, "value": 0.021513214030398343}, {"arrows": "to", "from": 0, "length": 99.79027600269349, "title": "synapse_index = 1\u003cbr/\u003eweight = 1.080\u003cbr/\u003edistance = 4.99", "to": 2, "value": 0.10800089215782752}, {"arrows": "to", "from": 0, "length": 100.41081749476477, "title": "synapse_index = 11\u003cbr/\u003eweight = 0.996\u003cbr/\u003edistance = 5.02", "to": 11, "value": 0.0995591192785099}, {"arrows": "to", "from": 0, "length": 98.37430018187469, "title": "synapse_index = 5\u003cbr/\u003eweight = 1.010\u003cbr/\u003edistance = 4.92", "to": 12, "value": 0.10099525909967787}, {"arrows": "to", "from": 0, "length": 94.17654435085352, "title": "synapse_index = 9\u003cbr/\u003eweight = 0.517\u003cbr/\u003edistance = 4.71", "to": 13, "value": 0.0517286692678707}, {"arrows": "to", "from": 0, "length": 92.87422827928074, "title": "synapse_index = 8\u003cbr/\u003eweight = 0.408\u003cbr/\u003edistance = 4.64", "to": 7, "value": 0.04077981885493979}, {"arrows": "to", "from": 0, "length": 102.51557452589269, "title": "synapse_index = 10\u003cbr/\u003eweight = 1.558\u003cbr/\u003edistance = 5.13", "to": 3, "value": 0.1557621790433036}, {"arrows": "to", "from": 1, "length": 103.43701516217777, "title": "synapse_index = 0\u003cbr/\u003eweight = 1.658\u003cbr/\u003edistance = 5.17", "to": 11, "value": 0.1657585670313727}, {"arrows": "to", "from": 1, "length": 104.48117466245877, "title": "synapse_index = 8\u003cbr/\u003eweight = 0.831\u003cbr/\u003edistance = 5.22", "to": 9, "value": 0.0831009870731188}, {"arrows": "to", "from": 1, "length": 104.86846446723374, "title": "synapse_index = 3\u003cbr/\u003eweight = 0.714\u003cbr/\u003edistance = 5.24", "to": 6, "value": 0.07139531820634575}, {"arrows": "to", "from": 1, "length": 93.93397927605128, "title": "synapse_index = 10\u003cbr/\u003eweight = 1.862\u003cbr/\u003edistance = 4.70", "to": 7, "value": 0.18618540326307756}, {"arrows": "to", "from": 1, "length": 97.61868119841924, "title": "synapse_index = 5\u003cbr/\u003eweight = 0.960\u003cbr/\u003edistance = 4.88", "to": 2, "value": 0.09603003190531546}, {"arrows": "to", "from": 1, "length": 102.5824485933939, "title": "synapse_index = 6\u003cbr/\u003eweight = 0.371\u003cbr/\u003edistance = 5.13", "to": 5, "value": 0.03705014462696906}, {"arrows": "to", "from": 1, "length": 103.5867762060905, "title": "synapse_index = 7\u003cbr/\u003eweight = 1.105\u003cbr/\u003edistance = 5.18", "to": 4, "value": 0.11052376050212916}, {"arrows": "to", "from": 1, "length": 103.97124846871924, "title": "synapse_index = 9\u003cbr/\u003eweight = 1.169\u003cbr/\u003edistance = 5.20", "to": 12, "value": 0.11686793311739115}, {"arrows": "to", "from": 1, "length": 95.38909697780844, "title": "synapse_index = 11\u003cbr/\u003eweight = 1.227\u003cbr/\u003edistance = 4.77", "to": 10, "value": 0.12266161911038993}, {"arrows": "to", "from": 2, "length": 105.3995897888422, "title": "synapse_index = 9\u003cbr/\u003eweight = 0.555\u003cbr/\u003edistance = 5.27", "to": 15, "value": 0.05546599725049688}, {"arrows": "to", "from": 2, "length": 100.19567582654639, "title": "synapse_index = 5\u003cbr/\u003eweight = 1.535\u003cbr/\u003edistance = 5.01", "to": 14, "value": 0.15352973675338955}, {"arrows": "to", "from": 2, "length": 14.807678363242564, "title": "synapse_index = 7\u003cbr/\u003eweight = 1.344\u003cbr/\u003edistance = 0.74", "to": 8, "value": 0.1344276971581396}, {"arrows": "to", "from": 2, "length": 13.05607532675381, "title": "synapse_index = 4\u003cbr/\u003eweight = 0.063\u003cbr/\u003edistance = 0.65", "to": 9, "value": 0.006346858154689428}, {"arrows": "to", "from": 2, "length": 9.805333134258886, "title": "synapse_index = 6\u003cbr/\u003eweight = 2.166\u003cbr/\u003edistance = 0.49", "to": 7, "value": 0.21655466801452558}, {"arrows": "to", "from": 2, "length": 17.334960291787567, "title": "synapse_index = 8\u003cbr/\u003eweight = 1.151\u003cbr/\u003edistance = 0.87", "to": 11, "value": 0.11514181477824803}, {"arrows": "to", "from": 2, "length": 9.818018070617832, "title": "synapse_index = 10\u003cbr/\u003eweight = 0.939\u003cbr/\u003edistance = 0.49", "to": 13, "value": 0.0938982760466867}, {"arrows": "to", "from": 2, "length": 14.486676533782898, "title": "synapse_index = 11\u003cbr/\u003eweight = 1.017\u003cbr/\u003edistance = 0.72", "to": 6, "value": 0.10171823475359872}, {"arrows": "to", "from": 3, "length": 13.243906945430481, "title": "synapse_index = 6\u003cbr/\u003eweight = 1.901\u003cbr/\u003edistance = 0.66", "to": 6, "value": 0.19008250506309357}, {"arrows": "to", "from": 3, "length": 13.903795805895893, "title": "synapse_index = 11\u003cbr/\u003eweight = 0.898\u003cbr/\u003edistance = 0.70", "to": 5, "value": 0.0898253972600371}, {"arrows": "to", "from": 3, "length": 10.948076897926555, "title": "synapse_index = 8\u003cbr/\u003eweight = 0.000\u003cbr/\u003edistance = 0.55", "to": 7, "value": 0.0}, {"arrows": "to", "from": 3, "length": 13.918220366521192, "title": "synapse_index = 3\u003cbr/\u003eweight = 1.250\u003cbr/\u003edistance = 0.70", "to": 4, "value": 0.12503053534037892}, {"arrows": "to", "from": 3, "length": 8.351801896463176, "title": "synapse_index = 5\u003cbr/\u003eweight = 1.315\u003cbr/\u003edistance = 0.42", "to": 2, "value": 0.13146669854453374}, {"arrows": "to", "from": 3, "length": 13.799801711383255, "title": "synapse_index = 7\u003cbr/\u003eweight = 0.187\u003cbr/\u003edistance = 0.69", "to": 11, "value": 0.018712738962445897}, {"arrows": "to", "from": 3, "length": 97.77214680577293, "title": "synapse_index = 9\u003cbr/\u003eweight = 0.787\u003cbr/\u003edistance = 4.89", "to": 14, "value": 0.07869634378569512}, {"arrows": "to", "from": 3, "length": 106.27220037656721, "title": "synapse_index = 10\u003cbr/\u003eweight = 1.137\u003cbr/\u003edistance = 5.31", "to": 15, "value": 0.11366309087813442}, {"arrows": "to", "from": 4, "length": 13.147711914531342, "title": "synapse_index = 0\u003cbr/\u003eweight = 1.010\u003cbr/\u003edistance = 0.66", "to": 8, "value": 0.10101721270360674}, {"arrows": "to", "from": 4, "length": 96.9282325699159, "title": "synapse_index = 6\u003cbr/\u003eweight = 1.028\u003cbr/\u003edistance = 4.85", "to": 14, "value": 0.10278674248552327}, {"arrows": "to", "from": 4, "length": 17.125217924745336, "title": "synapse_index = 2\u003cbr/\u003eweight = 1.546\u003cbr/\u003edistance = 0.86", "to": 5, "value": 0.15460895398346491}, {"arrows": "to", "from": 4, "length": 18.68158505328801, "title": "synapse_index = 3\u003cbr/\u003eweight = 1.440\u003cbr/\u003edistance = 0.93", "to": 3, "value": 0.14397238491761408}, {"arrows": "to", "from": 4, "length": 14.026087911043696, "title": "synapse_index = 7\u003cbr/\u003eweight = 1.499\u003cbr/\u003edistance = 0.70", "to": 11, "value": 0.1499357315838299}, {"arrows": "to", "from": 4, "length": 13.698129689277517, "title": "synapse_index = 11\u003cbr/\u003eweight = 0.876\u003cbr/\u003edistance = 0.68", "to": 10, "value": 0.08760497888399976}, {"arrows": "to", "from": 4, "length": 15.97960646157491, "title": "synapse_index = 9\u003cbr/\u003eweight = 1.308\u003cbr/\u003edistance = 0.80", "to": 2, "value": 0.13075698282044462}, {"arrows": "to", "from": 4, "length": 7.693532590280697, "title": "synapse_index = 10\u003cbr/\u003eweight = 1.462\u003cbr/\u003edistance = 0.38", "to": 12, "value": 0.14617404641410658}, {"arrows": "to", "from": 5, "length": 17.55979428878952, "title": "synapse_index = 0\u003cbr/\u003eweight = 1.871\u003cbr/\u003edistance = 0.88", "to": 10, "value": 0.1871110815393894}, {"arrows": "to", "from": 5, "length": 6.2623992025731345, "title": "synapse_index = 10\u003cbr/\u003eweight = 0.585\u003cbr/\u003edistance = 0.31", "to": 3, "value": 0.05853304419439938}, {"arrows": "to", "from": 5, "length": 15.118430791823902, "title": "synapse_index = 11\u003cbr/\u003eweight = 0.921\u003cbr/\u003edistance = 0.76", "to": 6, "value": 0.09212461439410147}, {"arrows": "to", "from": 5, "length": 10.884385108531065, "title": "synapse_index = 7\u003cbr/\u003eweight = 0.326\u003cbr/\u003edistance = 0.54", "to": 9, "value": 0.03260865879760303}, {"arrows": "to", "from": 5, "length": 4.769392222502107, "title": "synapse_index = 9\u003cbr/\u003eweight = 0.801\u003cbr/\u003edistance = 0.24", "to": 2, "value": 0.08007899684446258}, {"arrows": "to", "from": 6, "length": 9.765426541117805, "title": "synapse_index = 0\u003cbr/\u003eweight = 0.677\u003cbr/\u003edistance = 0.49", "to": 7, "value": 0.06769821637575564}, {"arrows": "to", "from": 6, "length": 103.59379911785892, "title": "synapse_index = 8\u003cbr/\u003eweight = 1.613\u003cbr/\u003edistance = 5.18", "to": 14, "value": 0.16130441451931465}, {"arrows": "to", "from": 6, "length": 12.80110541141546, "title": "synapse_index = 2\u003cbr/\u003eweight = 0.639\u003cbr/\u003edistance = 0.64", "to": 2, "value": 0.06389190281372491}, {"arrows": "to", "from": 6, "length": 11.32154975587797, "title": "synapse_index = 3\u003cbr/\u003eweight = 0.848\u003cbr/\u003edistance = 0.57", "to": 13, "value": 0.08484105555053652}, {"arrows": "to", "from": 6, "length": 10.928632628490345, "title": "synapse_index = 4\u003cbr/\u003eweight = 0.317\u003cbr/\u003edistance = 0.55", "to": 10, "value": 0.031706066927558264}, {"arrows": "to", "from": 6, "length": 8.162881444873564, "title": "synapse_index = 5\u003cbr/\u003eweight = 0.408\u003cbr/\u003edistance = 0.41", "to": 4, "value": 0.04079957186513721}, {"arrows": "to", "from": 6, "length": 8.180949485157276, "title": "synapse_index = 7\u003cbr/\u003eweight = 1.939\u003cbr/\u003edistance = 0.41", "to": 5, "value": 0.19388874480557639}, {"arrows": "to", "from": 6, "length": 18.079436833504175, "title": "synapse_index = 9\u003cbr/\u003eweight = 0.463\u003cbr/\u003edistance = 0.90", "to": 12, "value": 0.04631625804577847}, {"arrows": "to", "from": 6, "length": 7.283226654964626, "title": "synapse_index = 10\u003cbr/\u003eweight = 0.413\u003cbr/\u003edistance = 0.36", "to": 8, "value": 0.041334944773547315}, {"arrows": "to", "from": 6, "length": 8.532251166330173, "title": "synapse_index = 11\u003cbr/\u003eweight = 1.554\u003cbr/\u003edistance = 0.43", "to": 3, "value": 0.15539491233704328}, {"arrows": "to", "from": 7, "length": 95.009593332597, "title": "synapse_index = 0\u003cbr/\u003eweight = 0.396\u003cbr/\u003edistance = 4.75", "to": 15, "value": 0.03961578855213499}, {"arrows": "to", "from": 7, "length": 10.296366495031592, "title": "synapse_index = 8\u003cbr/\u003eweight = 0.955\u003cbr/\u003edistance = 0.51", "to": 10, "value": 0.09546334472800617}, {"arrows": "to", "from": 7, "length": 10.594709284497192, "title": "synapse_index = 2\u003cbr/\u003eweight = 1.786\u003cbr/\u003edistance = 0.53", "to": 6, "value": 0.17855758449070264}, {"arrows": "to", "from": 7, "length": 10.481276494821397, "title": "synapse_index = 3\u003cbr/\u003eweight = 1.790\u003cbr/\u003edistance = 0.52", "to": 13, "value": 0.17900203113745447}, {"arrows": "to", "from": 7, "length": 18.116285048548935, "title": "synapse_index = 5\u003cbr/\u003eweight = 1.123\u003cbr/\u003edistance = 0.91", "to": 5, "value": 0.11232401403149779}, {"arrows": "to", "from": 7, "length": 99.3638056022381, "title": "synapse_index = 6\u003cbr/\u003eweight = 0.918\u003cbr/\u003edistance = 4.97", "to": 14, "value": 0.09183959619544889}, {"arrows": "to", "from": 7, "length": 0.8408166286560448, "title": "synapse_index = 7\u003cbr/\u003eweight = 0.657\u003cbr/\u003edistance = 0.04", "to": 11, "value": 0.06571557619388171}, {"arrows": "to", "from": 7, "length": 10.147403134124449, "title": "synapse_index = 9\u003cbr/\u003eweight = 1.696\u003cbr/\u003edistance = 0.51", "to": 8, "value": 0.1696468753771947}, {"arrows": "to", "from": 7, "length": 10.424629924434665, "title": "synapse_index = 10\u003cbr/\u003eweight = 1.281\u003cbr/\u003edistance = 0.52", "to": 9, "value": 0.12806219384389253}, {"arrows": "to", "from": 7, "length": 12.192351292342776, "title": "synapse_index = 11\u003cbr/\u003eweight = 0.941\u003cbr/\u003edistance = 0.61", "to": 2, "value": 0.09413189058312163}, {"arrows": "to", "from": 8, "length": 5.704994258349606, "title": "synapse_index = 9\u003cbr/\u003eweight = 0.651\u003cbr/\u003edistance = 0.29", "to": 11, "value": 0.06507723345657433}, {"arrows": "to", "from": 8, "length": 14.379997602334493, "title": "synapse_index = 1\u003cbr/\u003eweight = 1.413\u003cbr/\u003edistance = 0.72", "to": 9, "value": 0.141264638485866}, {"arrows": "to", "from": 8, "length": 16.941426153833387, "title": "synapse_index = 2\u003cbr/\u003eweight = 1.946\u003cbr/\u003edistance = 0.85", "to": 10, "value": 0.19463947650320745}, {"arrows": "to", "from": 8, "length": 16.834583370638782, "title": "synapse_index = 4\u003cbr/\u003eweight = 0.593\u003cbr/\u003edistance = 0.84", "to": 6, "value": 0.05930053671921842}, {"arrows": "to", "from": 8, "length": 98.95787851415177, "title": "synapse_index = 8\u003cbr/\u003eweight = 0.461\u003cbr/\u003edistance = 4.95", "to": 14, "value": 0.046145846577960496}, {"arrows": "to", "from": 8, "length": 104.1963333536593, "title": "synapse_index = 11\u003cbr/\u003eweight = 1.210\u003cbr/\u003edistance = 5.21", "to": 15, "value": 0.12097094923111698}, {"arrows": "to", "from": 8, "length": 14.60030782416136, "title": "synapse_index = 7\u003cbr/\u003eweight = 0.390\u003cbr/\u003edistance = 0.73", "to": 2, "value": 0.03895349239832585}, {"arrows": "to", "from": 8, "length": 10.61151379309123, "title": "synapse_index = 10\u003cbr/\u003eweight = 0.600\u003cbr/\u003edistance = 0.53", "to": 12, "value": 0.05999285719526899}, {"arrows": "to", "from": 9, "length": 15.041466916374958, "title": "synapse_index = 8\u003cbr/\u003eweight = 1.963\u003cbr/\u003edistance = 0.75", "to": 4, "value": 0.1963489998746777}, {"arrows": "to", "from": 9, "length": 14.468539601769159, "title": "synapse_index = 5\u003cbr/\u003eweight = 1.277\u003cbr/\u003edistance = 0.72", "to": 10, "value": 0.1276702850519174}, {"arrows": "to", "from": 9, "length": 102.57088310809216, "title": "synapse_index = 2\u003cbr/\u003eweight = 1.224\u003cbr/\u003edistance = 5.13", "to": 14, "value": 0.1224377740260215}, {"arrows": "to", "from": 9, "length": 12.865138022185636, "title": "synapse_index = 3\u003cbr/\u003eweight = 1.619\u003cbr/\u003edistance = 0.64", "to": 13, "value": 0.16189396462265127}, {"arrows": "to", "from": 9, "length": 22.662156869277446, "title": "synapse_index = 9\u003cbr/\u003eweight = 0.991\u003cbr/\u003edistance = 1.13", "to": 3, "value": 0.09909276287986263}, {"arrows": "to", "from": 9, "length": 96.3615447434931, "title": "synapse_index = 7\u003cbr/\u003eweight = 1.034\u003cbr/\u003edistance = 4.82", "to": 15, "value": 0.10339111924979834}, {"arrows": "to", "from": 9, "length": 13.792892134784138, "title": "synapse_index = 10\u003cbr/\u003eweight = 0.921\u003cbr/\u003edistance = 0.69", "to": 5, "value": 0.0920951829279874}, {"arrows": "to", "from": 9, "length": 12.6799707626541, "title": "synapse_index = 11\u003cbr/\u003eweight = 1.134\u003cbr/\u003edistance = 0.63", "to": 7, "value": 0.11339181800672367}, {"arrows": "to", "from": 10, "length": 14.734653246489795, "title": "synapse_index = 5\u003cbr/\u003eweight = 0.353\u003cbr/\u003edistance = 0.74", "to": 2, "value": 0.035272578705396476}, {"arrows": "to", "from": 10, "length": 16.992361357273666, "title": "synapse_index = 1\u003cbr/\u003eweight = 0.698\u003cbr/\u003edistance = 0.85", "to": 6, "value": 0.06979028072823244}, {"arrows": "to", "from": 10, "length": 14.566328095273706, "title": "synapse_index = 11\u003cbr/\u003eweight = 0.568\u003cbr/\u003edistance = 0.73", "to": 8, "value": 0.056791862003682025}, {"arrows": "to", "from": 10, "length": 10.049326721551983, "title": "synapse_index = 10\u003cbr/\u003eweight = 1.493\u003cbr/\u003edistance = 0.50", "to": 7, "value": 0.14931342582085128}, {"arrows": "to", "from": 10, "length": 13.856299421129037, "title": "synapse_index = 4\u003cbr/\u003eweight = 0.698\u003cbr/\u003edistance = 0.69", "to": 11, "value": 0.06979117651491777}, {"arrows": "to", "from": 10, "length": 13.338034213631458, "title": "synapse_index = 6\u003cbr/\u003eweight = 1.355\u003cbr/\u003edistance = 0.67", "to": 5, "value": 0.13551993556314273}, {"arrows": "to", "from": 10, "length": 6.241782410431414, "title": "synapse_index = 8\u003cbr/\u003eweight = 1.774\u003cbr/\u003edistance = 0.31", "to": 4, "value": 0.17739806324080748}, {"arrows": "to", "from": 10, "length": 7.839303022054985, "title": "synapse_index = 9\u003cbr/\u003eweight = 1.311\u003cbr/\u003edistance = 0.39", "to": 13, "value": 0.13112435571717587}, {"arrows": "to", "from": 11, "length": 13.907097140411075, "title": "synapse_index = 3\u003cbr/\u003eweight = 0.541\u003cbr/\u003edistance = 0.70", "to": 4, "value": 0.05407456770338137}, {"arrows": "to", "from": 11, "length": 103.14509430770005, "title": "synapse_index = 1\u003cbr/\u003eweight = 0.686\u003cbr/\u003edistance = 5.16", "to": 14, "value": 0.06862409488587001}, {"arrows": "to", "from": 11, "length": 8.993499497212147, "title": "synapse_index = 2\u003cbr/\u003eweight = 1.165\u003cbr/\u003edistance = 0.45", "to": 6, "value": 0.11647653634327367}, {"arrows": "to", "from": 11, "length": 12.58398367986726, "title": "synapse_index = 5\u003cbr/\u003eweight = 1.315\u003cbr/\u003edistance = 0.63", "to": 10, "value": 0.1315308382435058}, {"arrows": "to", "from": 11, "length": 14.912700177952868, "title": "synapse_index = 6\u003cbr/\u003eweight = 0.908\u003cbr/\u003edistance = 0.75", "to": 8, "value": 0.0908108239265467}, {"arrows": "to", "from": 11, "length": 17.54716095508045, "title": "synapse_index = 8\u003cbr/\u003eweight = 0.421\u003cbr/\u003edistance = 0.88", "to": 7, "value": 0.04207619740042428}, {"arrows": "to", "from": 11, "length": 100.62934146832154, "title": "synapse_index = 9\u003cbr/\u003eweight = 1.321\u003cbr/\u003edistance = 5.03", "to": 15, "value": 0.13205467438930654}, {"arrows": "to", "from": 11, "length": 4.960054804859707, "title": "synapse_index = 10\u003cbr/\u003eweight = 0.434\u003cbr/\u003edistance = 0.25", "to": 12, "value": 0.043371928539252196}, {"arrows": "to", "from": 11, "length": 8.224269074813904, "title": "synapse_index = 11\u003cbr/\u003eweight = 0.939\u003cbr/\u003edistance = 0.41", "to": 3, "value": 0.09385506130989675}, {"arrows": "to", "from": 12, "length": 98.80137639569348, "title": "synapse_index = 3\u003cbr/\u003eweight = 0.607\u003cbr/\u003edistance = 4.94", "to": 15, "value": 0.06068483735722944}, {"arrows": "to", "from": 12, "length": 6.478521486123312, "title": "synapse_index = 1\u003cbr/\u003eweight = 0.778\u003cbr/\u003edistance = 0.32", "to": 9, "value": 0.07778662133080323}, {"arrows": "to", "from": 12, "length": 12.62418654417994, "title": "synapse_index = 9\u003cbr/\u003eweight = 0.587\u003cbr/\u003edistance = 0.63", "to": 2, "value": 0.05868851467315326}, {"arrows": "to", "from": 12, "length": 102.29262196898773, "title": "synapse_index = 5\u003cbr/\u003eweight = 1.682\u003cbr/\u003edistance = 5.11", "to": 14, "value": 0.16819942057360837}, {"arrows": "to", "from": 12, "length": 16.2235846728759, "title": "synapse_index = 6\u003cbr/\u003eweight = 1.816\u003cbr/\u003edistance = 0.81", "to": 11, "value": 0.181636217834705}, {"arrows": "to", "from": 12, "length": 3.008631254741757, "title": "synapse_index = 7\u003cbr/\u003eweight = 0.734\u003cbr/\u003edistance = 0.15", "to": 13, "value": 0.07341903299358647}, {"arrows": "to", "from": 12, "length": 9.17049685050287, "title": "synapse_index = 8\u003cbr/\u003eweight = 0.862\u003cbr/\u003edistance = 0.46", "to": 3, "value": 0.08616068968113143}, {"arrows": "to", "from": 12, "length": 18.410150825802802, "title": "synapse_index = 10\u003cbr/\u003eweight = 1.741\u003cbr/\u003edistance = 0.92", "to": 7, "value": 0.17408661516833948}, {"arrows": "to", "from": 12, "length": 17.471180985078526, "title": "synapse_index = 11\u003cbr/\u003eweight = 0.413\u003cbr/\u003edistance = 0.87", "to": 6, "value": 0.041332677500961305}, {"arrows": "to", "from": 13, "length": 12.373772967313418, "title": "synapse_index = 0\u003cbr/\u003eweight = 0.603\u003cbr/\u003edistance = 0.62", "to": 7, "value": 0.06025241522841993}, {"arrows": "to", "from": 13, "length": 6.104848710476593, "title": "synapse_index = 11\u003cbr/\u003eweight = 0.846\u003cbr/\u003edistance = 0.31", "to": 4, "value": 0.08463405274168795}, {"arrows": "to", "from": 13, "length": 14.53293940023141, "title": "synapse_index = 7\u003cbr/\u003eweight = 0.625\u003cbr/\u003edistance = 0.73", "to": 11, "value": 0.06250059762450047}, {"arrows": "to", "from": 13, "length": 6.407903972770309, "title": "synapse_index = 5\u003cbr/\u003eweight = 1.071\u003cbr/\u003edistance = 0.32", "to": 12, "value": 0.10711306561273815}, {"arrows": "to", "from": 13, "length": 17.539885039594054, "title": "synapse_index = 10\u003cbr/\u003eweight = 0.181\u003cbr/\u003edistance = 0.88", "to": 6, "value": 0.018093265347243682}, {"arrows": "to", "from": 13, "length": 103.38213493026544, "title": "synapse_index = 8\u003cbr/\u003eweight = 2.239\u003cbr/\u003edistance = 5.17", "to": 14, "value": 0.22385999415247992}]);
+
+                  nodeColors = {};
+                  allNodes = nodes.get({ returnType: "Object" });
+                  for (nodeId in allNodes) {
+                    nodeColors[nodeId] = allNodes[nodeId].color;
+                  }
+                  allEdges = edges.get({ returnType: "Object" });
+                  // adding nodes and edges to the graph
+                  data = {nodes: nodes, edges: edges};
+
+                  var options = {
+    "configure": {
+        "enabled": false
+    },
+    "edges": {
+        "color": {
+            "inherit": true
+        },
+        "smooth": {
+            "enabled": true,
+            "type": "dynamic"
+        }
+    },
+    "interaction": {
+        "dragNodes": true,
+        "hideEdgesOnDrag": false,
+        "hideNodesOnDrag": false
+    },
+    "physics": {
+        "enabled": true,
+        "repulsion": {
+            "centralGravity": 0.2,
+            "damping": 0.09,
+            "nodeDistance": 100,
+            "springConstant": 0.05,
+            "springLength": 200
+        },
+        "solver": "repulsion",
+        "stabilization": {
+            "enabled": true,
+            "fit": true,
+            "iterations": 1000,
+            "onlyDynamicEdges": false,
+            "updateInterval": 50
+        }
+    }
+};
+
+                  
+
+
+                  
+
+                  network = new vis.Network(container, data, options);
+
+                  
+
+                  
+
+                  
+
+
+                  
+
+                  return network;
+
+              }
+              drawGraph();
+        </script>
+    </body>
+</html>

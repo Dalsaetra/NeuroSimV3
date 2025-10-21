@@ -2,44 +2,66 @@ import numpy as np
 from neuron_templates import neuron_type_IZ
 
 class NeuronPopulation:
-    def __init__(self, neurons_per_layer, neuron_distribution, neuron_types, 
-                 inhibitory, threshold_decay, layer_distances=None, delta_V=2.5, 
-                 bias=0.0, threshold_mult=1.05, n_params=13, auto_populate=True):
+    def __init__(self, n_neurons, neuron_types, 
+                 inhibitory, threshold_decay, delta_V=2.5, 
+                 bias=0.0, threshold_mult=1.05, n_template_params=9):
         """
-        neurons_per_layer: list of integers, number of neurons in each layer
-        neuron_distribution: list with length neurons_per_layer of np.arrays of length neuron_types, probabilities of each neuron type in each layer
-        layer_distances: matrix of distances between layers, shape (n_layers, n_layers)
         neuron_types: list of neuron types (string), keys for types in neuron_templates.py
         inhibitory: list of booleans, True if the neuron type is inhibitory, False if it is excitatory, shape as neuron_types
         n_params: number of parameters for each neuron, default is 13 (k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V, bias, threshold_mult, threshold_decay)
         """
-
-        self.neurons_per_layer = neurons_per_layer
-        self.neuron_distribution = neuron_distribution
-        self.layer_distances = layer_distances
         self.neuron_types = neuron_types
+        self.n_neurons = n_neurons
+        self.n_neuron_types = len(self.neuron_types)
         self.inhibitory = inhibitory
-        self.n_params = n_params
+        self.n_params = n_template_params + 4
 
-        # Initialize the neuron population
-        self.n_layers = len(neurons_per_layer)
-        self.n_neurons = sum(neurons_per_layer)
+        self.threshold_decay = threshold_decay
+        self.delta_V = delta_V
+        self.bias = bias
+        self.threshold_mult = threshold_mult
 
         self.neuron_population = np.zeros((self.n_neurons, self.n_params))
         self.inhibitory_mask = np.zeros((self.n_neurons), dtype=bool)
         self.neuron_population_types = []
         self.layer_indices = []
 
-        if auto_populate:
-            self.populate(threshold_decay, delta_V, bias, threshold_mult)
-            self.n_neuron_types = len(neuron_types)
-            if self.layer_distances is None:
-                # If no layer distances are provided, build a linear distance matrix
-                self.build_linear_layerdistance_matrix()
-
-
         # Weight inhibitory mask, 1 for excitatory, -1 for inhibitory
         self.weight_inhibitory_mask = np.where(self.inhibitory_mask, -1, 1)
+
+    def set_neuron_params_from_type(self, idx, type):
+        """
+        Set the parameters of a neuron given its type
+        """
+        if type not in self.neuron_types:
+            raise ValueError(f"Neuron type {type} not found in neuron types.")
+        params = neuron_type_IZ[type]
+        self.neuron_population[idx][:len(params)] = params
+        self.neuron_population[idx][len(params):] = [self.delta_V, self.bias, self.threshold_mult, self.threshold_decay]
+        neuron_type_index = self.type_index_from_neuron_type(type)
+        self.inhibitory_mask[idx] = self.inhibitory[neuron_type_index]
+        self.weight_inhibitory_mask[idx] = -1 if self.inhibitory[neuron_type_index] else 1
+        self.neuron_population_types.append(type)
+
+    def populate_from_probability(self, neurons_per_layer, neuron_distribution, layer_distances=None):
+        """
+        neurons_per_layer: list of integers, number of neurons in each layer
+        neuron_distribution: list with length neurons_per_layer of np.arrays of length neuron_types, probabilities of each neuron type in each layer
+        layer_distances: matrix of distances between layers, shape (n_layers, n_layers)
+        """
+
+        self.neurons_per_layer = neurons_per_layer
+        self.neuron_distribution = neuron_distribution
+        self.layer_distances = layer_distances
+
+        # Initialize the neuron population
+        self.n_layers = len(neurons_per_layer)
+        self.n_neurons = sum(neurons_per_layer)
+
+        self.populate(self.threshold_decay, self.delta_V, self.bias, self.threshold_mult)
+        if self.layer_distances is None:
+            # If no layer distances are provided, build a linear distance matrix
+            self.build_linear_layerdistance_matrix()
         
 
     def populate(self, threshold_decay, delta_V, bias, threshold_mult):
@@ -109,6 +131,12 @@ class NeuronPopulation:
         Get the neurons from a layer given its index
         """
         return self.layer_indices[layer]
+    
+    def get_neurons_from_type(self, neuron_type):
+        """
+        Get the neurons from a neuron type given its name
+        """
+        return [i for i, t in enumerate(self.neuron_population_types) if t == neuron_type]
     
     def get_types_from_layer(self, layer):
         """

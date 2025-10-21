@@ -2,29 +2,21 @@ import numpy as np
 from neuron_population import NeuronPopulation
 import networkx as nx
 import matplotlib.pyplot as plt
+from networkx.algorithms import smallworld
 
 class Connectome:
-    def __init__(self, max_synapses, neuron_population: NeuronPopulation, connectivity_probability, synapse_strengths=None,
-                 autobuild=True):
+    def __init__(self, max_synapses, neuron_population: NeuronPopulation):
         """
         Connectome class to represent the connectivity between neurons in a population.
         
         Parameters:
         max_synapses: int, maximum number of downstream synapses per neuron
         neuron_population: NeuronPopulation object, the neuron population to connect
-        connectivity_probability: array of global connectivity probability, shape (n_layers, n_layers, n_neuron_types, n_neuron_types+2), -2 dimension is for autaptic connections, -1 for no connection
-        synapse_strengths: array of synapse weight scale, shape (n_layers, n_layers)
         """
         assert max_synapses <= neuron_population.n_neurons, "max_synapses must be less than or equal to the number of neurons in the population."
 
         self.max_synapses = max_synapses
         self.neuron_population = neuron_population
-        self.connectivity_probability = connectivity_probability
-        self.synapse_strengths = synapse_strengths
-
-        if self.synapse_strengths is None:
-            # If no synapse strengths are provided, use a default value of 1.0
-            self.synapse_strengths = np.ones((self.neuron_population.n_layers, self.neuron_population.n_layers))
 
         # Connectivity matrix
         # M[i, j] = k, k is the neuron index where the jth axon of the ith neuron ends up
@@ -39,15 +31,35 @@ class Connectome:
         # Dendritic markers
         self.dendritic = np.zeros((self.neuron_population.n_neurons, max_synapses), dtype=bool)
 
-        if autobuild:
-            assert len(connectivity_probability.shape) == 4, "connectivity_probability must be a 4D array."
-            assert len(synapse_strengths.shape) == 2, "synapse_strengths must be a 2D array."
-            self.build_connectome()
-            self.build_distances()
-            self.build_nx()
+        # Distances matrix
+        self.distances = np.ones((self.neuron_population.n_neurons, max_synapses), dtype=float)
 
-        # Invert NC
-        # self.NC_invert = ~self.NC
+        self.NC_invert = ~self.NC  # Inverted NC matrix for easier indexing
+
+
+    def build_from_probability(self, connectivity_probability, synapse_strengths=None):
+        """
+        Build the connectome from a probability matrix.
+
+        Parameters:
+        connectivity_probability: array of global connectivity probability, shape (n_layers, n_layers, n_neuron_types, n_neuron_types+2), -2 dimension is for autaptic connections, -1 for no connection
+        synapse_strengths: array of synapse weight scale, shape (n_layers, n_layers)
+        """
+
+        self.connectivity_probability = connectivity_probability
+        self.synapse_strengths = synapse_strengths
+
+        if self.synapse_strengths is None:
+            # If no synapse strengths are provided, use a default value of 1.0
+            self.synapse_strengths = np.ones((self.neuron_population.n_layers, self.neuron_population.n_layers))
+
+        assert len(connectivity_probability.shape) == 4, "connectivity_probability must be a 4D array."
+        assert len(synapse_strengths.shape) == 2, "synapse_strengths must be a 2D array."
+        self.build_connectome()
+        self.build_distances()
+        self.build_nx()
+
+        self.NC_invert = ~self.NC  # Inverted NC matrix for easier indexing
 
     def set_connection(self, i, j, k, w = None):
         """
@@ -55,7 +67,9 @@ class Connectome:
         
         Parameters:
         i: int, index of the presynaptic neuron
-        j: int, index of the postsynaptic neuron
+        j: int, index of the synapse (0 to max_synapses-1)
+        k: int, index of the postsynaptic neuron
+        w: float, weight of the connection (optional)
         """
         if j < self.max_synapses:
             self.M[i, j] = k
@@ -66,7 +80,7 @@ class Connectome:
         
     def get_random_weight(self, layer_from, layer_to):
         """
-        Get a random weight for the connection between two layers.
+        Get a random weight for the connection between two layers. (For probabilistic connectivity)
         
         Parameters:
         layer_from: int, index of the presynaptic layer
@@ -82,7 +96,7 @@ class Connectome:
     
     def set_random_weights(self):
         """
-        Set random weights for all connections in the connectome.
+        Set random weights for all connections in the connectome. (For probabilistic connectivity)
         """
         for i in range(self.neuron_population.n_neurons):
             layer_from = self.neuron_population.get_layer(i)
@@ -94,7 +108,7 @@ class Connectome:
 
     def build_connectome(self):
         """
-        Build the connectome by generating the connectivity matrix and weight matrix.
+        Build the connectome by generating the connectivity matrix and weight matrix. (For probabilistic connectivity)
         """
         # Generate random connectivity based on the connectivity probability
         for i in range(self.neuron_population.n_neurons):
@@ -165,7 +179,7 @@ class Connectome:
     
     def build_distances(self):
         """
-        Build the distances between neurons in the connectome.
+        Build the distances between neurons in the connectome. (For probabilistic connectivity)
         """
         # Build the distances between neurons in the connectome
         self.distances = np.zeros_like(self.M, dtype=float)
@@ -223,6 +237,75 @@ class Connectome:
         plt.show()
 
         return histogram, bin_edges
+    
+
+    def nx_to_connectome(self, G: nx.DiGraph):
+        """
+        Populate the Connectome instance from a given NetworkX DiGraph.
+        
+        Parameters
+        ----------
+        G : networkx.DiGraph
+            The directed graph representing the connectome. Nodes should have attributes:
+            - 'layer': int, the layer index of the neuron
+            - 'inhibitory': bool, True if the neuron is inhibitory
+            - 'ntype': str, the neuron type name
+
+            Edges should have attributes:
+            - 'weight': float, synaptic weight (optional)
+            - 'distance': float, anatomical distance (optional)
+            - 'dendritic': bool, True if the synapse is dendritic (optional)
+        """
+        self.G = G
+        pop = self.neuron_population
+        n_neurons = G.number_of_nodes()
+        max_synapses = max(dict(G.out_degree()).values())
+
+        # Reinitialize matrices based on the graph
+        self.M = np.zeros((n_neurons, max_synapses), dtype=int)
+        self.W = np.zeros((n_neurons, max_synapses), dtype=float)
+        self.NC = np.ones((n_neurons, max_synapses), dtype=bool)  # Start with all no-connection
+        self.dendritic = np.zeros((n_neurons, max_synapses), dtype=bool)
+        self.distances = np.zeros((n_neurons, max_synapses), dtype=float)
+
+        node_mapping = {node: idx for idx, node in enumerate(G.nodes())}
+
+        for u, v, data in G.edges(data=True):
+            i = node_mapping[u]
+            k = node_mapping[v]
+            j = np.where(self.NC[i, :])[0]
+            if len(j) == 0:
+                raise ValueError(f"Neuron {i} has more outgoing connections than max_synapses.")
+            j = j[0]  # Get the first available synapse slot
+
+            self.M[i, j] = k
+            self.NC[i, j] = False  # Mark as connected
+
+            weight = data.get('weight', None)
+            if weight is not None:
+                self.W[i, j] = weight
+            else:
+                raise ValueError("Weight attribute is required for all edges in the graph.")
+
+            distance = data.get('distance', None)
+            if distance is not None:
+                self.distances[i, j] = distance
+            else:
+                raise ValueError("Distance attribute is required for all edges in the graph.")
+
+            dendritic = data.get('dendritic', False)
+            self.dendritic[i, j] = dendritic
+
+        # Update neuron population if necessary
+        if n_neurons != pop.n_neurons:
+            raise ValueError("The number of neurons in the graph does not match the neuron population.")
+
+        # Update neuron types from graph attributes
+        for node, idx in node_mapping.items():
+            ntype = G.nodes[node].get('ntype', None)
+            pop.set_neuron_params_from_type(idx, ntype)
+
+        self.NC_invert = ~self.NC  # Inverted NC matrix for easier indexing
 
 
     def build_nx(self, include_weights: bool = True, include_self_loops: bool = True):
@@ -271,6 +354,195 @@ class Connectome:
             G.add_edge(i, k, **attrs)
 
         self.G = G
+
+    def compute_metrics(self, small_world=True, weight_attr="weight", dist_attr="distance"):
+        """
+        Computes connectome metrics on self.G (DiGraph) with schema:
+        node['inhibitory'] -> bool
+        edge['weight']     -> float (positive)
+        edge['distance']   -> float (>=0), spatial wiring cost proxy
+
+        Returns dict of metrics.
+        """
+        import numpy as np
+        import networkx as nx
+
+        if not hasattr(self, 'G'):
+            self.build_nx()
+        G = self.G if isinstance(self.G, nx.DiGraph) else nx.DiGraph(self.G)
+
+        out = {}
+
+        # ---------- Small-worldness (undirected proxy) ----------
+        if small_world:
+            try:
+                out["smallworld_omega"] = float(smallworld.omega(G.to_undirected(), niter=2, nrand=4))
+            except Exception as e:
+                out["smallworld_omega"] = None
+                out["smallworld_omega_error"] = str(e)
+
+        # ---------- Spectral radius of positive W (rows=post, cols=pre) ----------
+        nodes = list(G.nodes())
+        n = len(nodes)
+        idx = {u: i for i, u in enumerate(nodes)}
+        rows, cols, data = [], [], []
+        for u, v, d in G.edges(data=True):
+            w = float(d.get(weight_attr, 1.0))
+            rows.append(idx[v])  # postsyn row
+            cols.append(idx[u])  # presyn col
+            data.append(w)
+
+        if data:
+            try:
+                import scipy.sparse as sp
+                import scipy.sparse.linalg as spla
+                W = sp.csr_matrix((data, (rows, cols)), shape=(n, n))
+                ev = spla.eigs(W, k=1, which='LM', return_eigenvectors=False)
+                out["spectral_radius"] = float(np.abs(ev[0]))
+            except Exception:
+                # power iteration fallback
+                import numpy as np
+                try:
+                    import scipy.sparse as sp
+                    W = sp.csr_matrix((data, (rows, cols)), shape=(n, n))
+                    x = np.random.default_rng(0).standard_normal(n)
+                    x /= (np.linalg.norm(x) + 1e-12)
+                    for _ in range(100):
+                        x = W @ x
+                        x /= (np.linalg.norm(x) + 1e-12)
+                    lam = float((x @ (W @ x)) / (x @ x))
+                    out["spectral_radius"] = abs(lam)
+                except Exception:
+                    Wd = np.zeros((n, n), float)
+                    for r, c, w in zip(rows, cols, data):
+                        Wd[r, c] = w
+                    ev = np.linalg.eigvals(Wd)
+                    out["spectral_radius"] = float(np.max(np.abs(ev)))
+        else:
+            out["spectral_radius"] = 0.0
+
+        # ---------- Node type counts (from 'inhibitory') ----------
+        inhib = {u: bool(G.nodes[u].get("inhibitory", False)) for u in nodes}
+        n_I = sum(1 for u in nodes if inhib[u])
+        n_E = n - n_I
+        out["n_nodes"] = n
+        out["n_edges"] = G.number_of_edges()
+        out["n_E"] = n_E
+        out["n_I"] = n_I
+
+        # ---------- Degree & strength (weighted degree) ----------
+        kin  = np.array([G.in_degree(u)  for u in nodes], float)
+        kout = np.array([G.out_degree(u) for u in nodes], float)
+        sin  = np.array([sum(G[u][v].get(weight_attr, 0.0) for u in G.predecessors(v)) for v in nodes], float)
+        sout = np.array([sum(G[u][v].get(weight_attr, 0.0) for v in G.successors(u))   for u in nodes], float)
+        out.update({
+            "k_in_mean": float(kin.mean()) if n else 0.0,
+            "k_out_mean": float(kout.mean()) if n else 0.0,
+            "s_in_mean": float(sin.mean()) if n else 0.0,
+            "s_out_mean": float(sout.mean()) if n else 0.0,
+            "k_in_std": float(kin.std(ddof=1)) if n>1 else 0.0,
+            "k_out_std": float(kout.std(ddof=1)) if n>1 else 0.0,
+            "s_in_std": float(sin.std(ddof=1)) if n>1 else 0.0,
+            "s_out_std": float(sout.std(ddof=1)) if n>1 else 0.0,
+        })
+
+        # ---------- Edge mix by cell types ----------
+        ee = ei = ie = ii = 0
+        for u, v in G.edges():
+            preI = inhib[u]; postI = inhib[v]
+            if not preI and not postI: ee += 1
+            elif not preI and postI:  ei += 1
+            elif preI and not postI:  ie += 1
+            else:                     ii += 1
+        m = max(1, G.number_of_edges())
+        out["edge_frac_EE"] = ee / m
+        out["edge_frac_EI"] = ei / m
+        out["edge_frac_IE"] = ie / m
+        out["edge_frac_II"] = ii / m
+
+        # ---------- Reciprocity & assortativity ----------
+        out["reciprocity"] = float(nx.reciprocity(G)) if G.number_of_edges() else 0.0
+        try:
+            out["assort_out_to_in_degree"] = float(nx.degree_assortativity_coefficient(G, x='out', y='in'))
+        except Exception:
+            out["assort_out_to_in_degree"] = None
+
+        # Strength assortativity proxy: corr of s_out(u) vs s_in(v) over edges
+        if G.number_of_edges():
+            so = np.array([sout[idx[u]] for u, v in G.edges()], float)
+            si = np.array([sin[idx[v]]  for u, v in G.edges()], float)
+            if so.std() > 0 and si.std() > 0:
+                out["assort_outStrength_to_inStrength"] = float(np.corrcoef(so, si)[0, 1])
+            else:
+                out["assort_outStrength_to_inStrength"] = np.nan
+        else:
+            out["assort_outStrength_to_inStrength"] = np.nan
+
+        # ---------- Clustering / transitivity (undirected; weighted) ----------
+        Gu = G.to_undirected()
+        try:
+            out["clustering_avg_weighted"] = float(nx.average_clustering(Gu, weight=weight_attr))
+            out["transitivity_unweighted"] = float(nx.transitivity(Gu))
+        except Exception:
+            out["clustering_avg_weighted"] = None
+            out["transitivity_unweighted"] = None
+
+        # ---------- Rich-club (undirected; unweighted) ----------
+        try:
+            rc = nx.rich_club_coefficient(Gu, normalized=False)
+            if rc:
+                degs = np.array([Gu.degree(u) for u in nodes])
+                kth = int(np.quantile(degs, 0.9))
+                ks = np.array(sorted(rc.keys()))
+                k_sel = ks[np.searchsorted(ks, kth, side='left')] if ks.size else kth
+                out["rich_club_phi_k"] = float(rc.get(int(k_sel), list(rc.values())[-1]))
+                out["rich_club_k_sel"] = int(k_sel)
+            else:
+                out["rich_club_phi_k"] = None
+                out["rich_club_k_sel"] = None
+        except Exception:
+            out["rich_club_phi_k"] = None
+            out["rich_club_k_sel"] = None
+
+        # ---------- Triadic census (directed motifs) ----------
+        try:
+            out["triadic_census"] = {k:int(v) for k, v in nx.triadic_census(G).items()}
+        except Exception:
+            out["triadic_census"] = None
+
+        # ---------- Weight & wiring metrics ----------
+        w_list = np.array([float(d.get(weight_attr, 0.0)) for _, _, d in G.edges(data=True)], float)
+        d_list = np.array([float(d.get(dist_attr, 0.0))   for _, _, d in G.edges(data=True)], float)
+        if w_list.size:
+            out["weight_mean"] = float(w_list.mean())
+            out["weight_median"] = float(np.median(w_list))
+            out["weight_std"] = float(w_list.std(ddof=1)) if w_list.size > 1 else 0.0
+            out["mean_edge_distance"] = float(d_list.mean()) if d_list.size else None
+            out["total_wiring_cost_weighted"] = float(np.sum(w_list * d_list)) if d_list.size else None
+            # optional: per-node cost
+            if d_list.size:
+                cost_per_node = np.zeros(n, float)
+                for (u, v, d) in G.edges(data=True):
+                    cost_per_node[idx[u]] += d.get(weight_attr, 0.0) * d.get(dist_attr, 0.0)
+                out["mean_node_wiring_cost_weighted"] = float(cost_per_node.mean())
+        else:
+            out.update({
+                "weight_mean": 0.0,
+                "weight_median": 0.0,
+                "weight_std": 0.0,
+                "mean_edge_distance": None,
+                "total_wiring_cost_weighted": None,
+                "mean_node_wiring_cost_weighted": None,
+            })
+
+        density = nx.density(G)
+        out["density"] = float(density) if density is not None else 0.0
+        # Number of edges
+        out["n_edges"] = G.number_of_edges()
+
+        return out
+
+
 
     def evaluate_small_world(self, legend=True):
         """
