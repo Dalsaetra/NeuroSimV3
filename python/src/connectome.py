@@ -25,7 +25,7 @@ class Connectome:
         # Weight matrix
         self.W = np.zeros((self.neuron_population.n_neurons, max_synapses), dtype=float)
 
-        # No-connection matrix
+        # No-connection matrix (True if no connection/synapse ignored)
         self.NC = np.zeros((self.neuron_population.n_neurons, max_synapses), dtype=bool)
 
         # Dendritic markers

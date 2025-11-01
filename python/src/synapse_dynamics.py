@@ -102,7 +102,13 @@ class SynapseDynamics:
             WS = np.multiply(spikes[self.excitatory_mask], self.connectome.W[self.excitatory_mask]) # shape (n_neurons x max_synapses)
             excit_input = np.bincount(self.connectome.M[self.excitatory_mask].ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
             self.g_AMPA += excit_input
-            self.g_NMDA += excit_input 
+            self.g_NMDA += excit_input
+
+    def sensory_spike_input(self, weighted_spikes):
+        # weighted_spikes: n_neurons x 1
+
+        self.g_AMPA += weighted_spikes
+        self.g_NMDA += weighted_spikes
 
     # def __call__(self, neurons_V):
     #     # neurons_V: n_neurons x 1

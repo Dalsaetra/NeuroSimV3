@@ -187,7 +187,7 @@ class Simulation:
         self.stats.ts.append(self.t_now)
 
 
-    def step(self, I_ext=None):
+    def step(self, I_ext=None, spike_ext=None):
         """
         Step the simulation forward in time.
         """
@@ -210,6 +210,8 @@ class Simulation:
         # self.plasticity.step(post_spikes, I_syn, reward=1) 
         # Update synapse reaction class from the pre_spikes
         self.synapse_dynamics.spike_input(pre_spikes)
+        if spike_ext is not None:
+            self.synapse_dynamics.sensory_spike_input(spike_ext)
         # Update the current time
         self.t_now += self.dt
         # Store the current state

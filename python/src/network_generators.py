@@ -62,6 +62,10 @@ def spatial_pa_directed(n=2000, m=3, box_dim=2, alpha=2.0,
             if u != v and not G.has_edge(u, v):
                 G.add_edge(u, v)
 
+    # Edge property distance as Euclidean distance
+    for u, v in G.edges():
+        G.edges[u, v]['distance'] = np.linalg.norm(pos[u] - pos[v])
+
     return G
 
 def directed_triad_closure(G, p=0.1):
@@ -82,6 +86,7 @@ def spatial_pa_directed_var_out(n=100, box_dim=2,
                                 kout_dist="lognormal", kout_params=(0.7, 0.9),
                                 kmin=1, seed=0):
     """
+    Differential out-degree version of spatial_pa_directed.
     n: nodes
     box_dim: 2 or 3 (layout space)
     alpha: distance decay exponent in [1, 4] (higher = more local)
@@ -140,6 +145,10 @@ def spatial_pa_directed_var_out(n=100, box_dim=2,
         for v in choose_targets(u, k):
             if u != v and not G.has_edge(u, v):
                 G.add_edge(u, v)
+
+    # Edge property distance as Euclidean distance
+    for u, v in G.edges():
+        G.edges[u, v]['distance'] = np.linalg.norm(pos[u] - pos[v])
 
     return G
 
@@ -230,3 +239,7 @@ def ensure_min_in_out(G: nx.DiGraph, pos_attr: str = "pos"):
     for u, v in added:
         if not G.has_edge(u, v):
             G.add_edge(u, v)
+
+    # Edge property distance as Euclidean distance
+    for u, v in G.edges():
+        G.edges[u, v]['distance'] = np.linalg.norm(P[nodes.index(u)] - P[nodes.index(v)])
