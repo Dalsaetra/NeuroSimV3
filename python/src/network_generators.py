@@ -243,3 +243,192 @@ def ensure_min_in_out(G: nx.DiGraph, pos_attr: str = "pos"):
     # Edge property distance as Euclidean distance
     for u, v in G.edges():
         G.edges[u, v]['distance'] = np.linalg.norm(P[nodes.index(u)] - P[nodes.index(v)])
+
+def ensure_min_in_out_advanced(G: nx.DiGraph, pos, min_in=1, min_out=1, alpha_local=10.0, rng=None):
+    """Guarantee each node has ≥min_in and ≥min_out by adding short edges (with distance attribute)."""
+    if rng is None:
+        rng = np.random.default_rng()
+    nodes = list(G.nodes())
+    coords = np.array([pos[u] for u in nodes])
+    for u in nodes:
+        # add out-edges if needed
+        need_out = max(0, min_out - G.out_degree(u))
+        if need_out > 0:
+            dists = np.linalg.norm(coords - coords[u], axis=1)
+            order = np.argsort(dists)
+            for v in order:
+                if need_out == 0:
+                    break
+                v = int(v)
+                if v == u or G.has_edge(u, v):
+                    continue
+                # distance-biased acceptance
+                p = np.exp(-alpha_local * dists[v])
+                if rng.random() < p:
+                    G.add_edge(u, v, distance=float(dists[v]))
+                    need_out -= 1
+
+        # add in-edges if needed
+        need_in = max(0, min_in - G.in_degree(u))
+        if need_in > 0:
+            dists = np.linalg.norm(coords - coords[u], axis=1)
+            order = np.argsort(dists)
+            for v in order:
+                if need_in == 0:
+                    break
+                v = int(v)
+                if v == u or G.has_edge(v, u):
+                    continue
+                p = np.exp(-alpha_local * dists[v])
+                if rng.random() < p:
+                    G.add_edge(v, u, distance=float(dists[v]))
+                    need_in -= 1
+
+def _euclid_dist(a, b):
+    return float(np.linalg.norm(a - b))
+
+def _sample_outdeg(n, k_out, rng):
+    """
+    k_out can be:
+      - int  -> constant out-degree
+      - tuple (low, high) -> uniform integer range inclusive
+      - callable i->int (receives node index, should return int)
+    """
+    if callable(k_out):
+        return np.array([int(max(0, k_out(i))) for i in range(n)], dtype=int)
+    if isinstance(k_out, (list, np.ndarray)):
+        return np.asarray(k_out, dtype=int)
+    if isinstance(k_out, tuple):
+        lo, hi = map(int, k_out)
+        return rng.integers(lo, hi + 1, size=n)
+    return np.full(n, int(k_out), dtype=int)
+
+def spatial_pa_directed_var_out_reciprocal(
+    n: int,
+    box_dim: int = 2,
+    k_out = (4, 8),              # variable out-degree per new node
+    m0: int = 8,                 # size of initial seed
+    alpha_dist: float = 8.0,     # distance kernel; larger -> more local
+    attractiveness: float = 1.0, # additive in-degree bias (a.k.a. "k_in + c")
+    reciprocity: float = 0.3,    # probability to add v->u when u->v exists
+    reciprocity_local: float = 1.5,  # multiplicative bias for short-range reciprocity
+    seed: int | None = None,
+    enforce_min_deg: bool = True,
+    pos_attr: str = "pos",
+):
+    """
+    Build a spatial, directed PA graph with variable out-degree and tunable reciprocity.
+
+    Nodes are placed uniformly in [0,1]^box_dim.
+    On adding node i, we pick k_out[i] targets among existing nodes j with prob ∝
+        (k_in(j) + attractiveness) * exp(-alpha_dist * ||x_i - x_j||).
+
+    After the forward edges u->v are placed, each such edge spawns a reciprocal
+    edge v->u with probability:
+        p_recip(u,v) = sigmoid( logit(reciprocity) + reciprocity_local * exp(-alpha_dist * d(u,v)) )
+    which favors local mutual connections when reciprocity_local > 0.
+
+    Edge attribute:
+      - 'distance' : Euclidean distance between endpoints (for your connectome pipeline)
+
+    Returns:
+      G  (and pos dict if return_pos=True)
+    """
+    rng = np.random.default_rng(seed)
+    G = nx.DiGraph()
+
+    # --- positions ---
+    coords = rng.random((n, box_dim))
+    pos = {i: coords[i] for i in range(n)}
+
+    # --- seed graph (weakly connected, local) ---
+    m0 = max(2, min(m0, n))
+    for i in range(m0):
+        G.add_node(i)
+    # connect seed with local distance-biased edges both directions sparsely
+    for u in range(m0):
+        for v in range(u + 1, m0):
+            d = _euclid_dist(coords[u], coords[v])
+            p = np.exp(-alpha_dist * d)
+            if rng.random() < p:
+                G.add_edge(u, v, distance=d)
+            if rng.random() < p:
+                G.add_edge(v, u, distance=d)
+
+    # --- variable out-degree for each node ---
+    kout = _sample_outdeg(n, k_out, rng)
+    kout[:m0] = np.minimum(kout[:m0], max(0, m0 - 1))  # keep early nodes reasonable
+
+    # --- PA growth ---
+    for i in range(m0, n):
+        G.add_node(i)
+        # compute target distribution over existing nodes (0..i-1)
+        existing = np.arange(i, dtype=int)
+        if existing.size == 0:
+            continue
+        # in-degree term
+        kin = np.array([G.in_degree(j) for j in existing], dtype=float)
+        deg_term = kin + float(attractiveness)
+
+        # distance term
+        dists = np.linalg.norm(coords[existing] - coords[i], axis=1)
+        dist_term = np.exp(-alpha_dist * dists)
+
+        scores = deg_term * dist_term
+        if np.all(scores <= 0) or not np.isfinite(scores).any():
+            # fallback: pure distance
+            scores = dist_term + 1e-12
+
+        probs = scores / scores.sum()
+        k = int(max(0, kout[i]))
+        if k == 0:
+            continue
+
+        # sample without replacement, respecting no self-loops / no multiedges
+        targets = []
+        # choose up to min(k, i) unique targets
+        choose = min(k, i)
+        # handle corner case numeric issues
+        choose = max(0, choose)
+        if choose > 0:
+            # draw indices by weighted sampling without replacement
+            # (approximate by iterative draws to keep dependencies simple)
+            available = existing.tolist()
+            p_vec = probs.copy()
+            for _ in range(choose):
+                # re-normalize
+                if p_vec.sum() <= 0:
+                    break
+                p_vec = p_vec / p_vec.sum()
+                j_idx = rng.choice(len(available), p=p_vec)
+                v = int(available[j_idx])
+                # add edge i->v if not already present
+                if i != v and not G.has_edge(i, v):
+                    d = float(np.linalg.norm(coords[i] - coords[v]))
+                    G.add_edge(i, v, distance=d)
+                    targets.append(v)
+                # remove chosen from pool
+                del available[j_idx]
+                p_vec = np.delete(p_vec, j_idx)
+
+        # --- reciprocity step for edges i->v ---
+        if reciprocity and targets:
+            # convert 'reciprocity' into a base logit; add a local-distance bias
+            base = np.log(reciprocity / (1.0 - reciprocity + 1e-12) + 1e-12)
+            for v in targets:
+                if G.has_edge(v, i):
+                    continue
+                d = float(np.linalg.norm(coords[i] - coords[v]))
+                local_push = reciprocity_local * np.exp(-alpha_dist * d)
+                p_back = 1.0 / (1.0 + np.exp(-(base + local_push)))
+                if rng.random() < p_back:
+                    G.add_edge(v, i, distance=d)
+
+    # --- optional: ensure every node has at least 1 in and 1 out ---
+    if enforce_min_deg:
+        ensure_min_in_out_advanced(G, pos, min_in=1, min_out=1, alpha_local=alpha_dist, rng=rng)
+
+    # Assign positions as node attributes
+    nx.set_node_attributes(G, pos, name=pos_attr)
+
+    return G

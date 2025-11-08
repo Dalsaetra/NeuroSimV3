@@ -71,7 +71,8 @@ class SimulationStats:
         bin_ms_corr=50.0,
         refractory_ms=1.5,
         spectrum_from="population",   # "population" or "mean_neuron"
-        pop_smooth_ms=0.0
+        pop_smooth_ms=0.0,
+        bin_ms_participation=200.0     # <--- NEW: window for activity sparsity
     ):
         """
         Returns a dict with:
@@ -81,6 +82,7 @@ class SimulationStats:
           - Fano_median (bin_ms) (want around 1)
           - mean_noise_corr (bin_ms) (want 0-0.1)
           - pop_spec_entropy (higher is richer spectrum)
+          - participation_frac_mean_(bin_ms) / participation_frac_median_(bin_ms) / participation_frac_p95_(bin_ms)
         """
         out = {}
         S = self.spikes_bool()              # (N, T) bool
@@ -133,6 +135,21 @@ class SimulationStats:
         else:
             out["Fano_median_%dms" % int(bin_ms_fano)] = np.nan
             out["mean_noise_corr_%dms" % int(bin_ms_corr)] = np.nan
+
+        # --- participation sparsity ---
+        part_steps = max(1, int(round(bin_ms_participation / dt_ms)))
+        part_counts = bin_counts(S, bin_steps=part_steps)  # (N, n_part_bins)
+        if part_counts.shape[1] >= 1:
+            # For each bin: fraction of neurons with ≥1 spike
+            active_mask = part_counts > 0
+            frac_active_per_bin = active_mask.sum(axis=0) / float(N)
+            out["participation_frac_mean_%dms"   % int(bin_ms_participation)] = float(np.mean(frac_active_per_bin))
+            out["participation_frac_median_%dms" % int(bin_ms_participation)] = float(np.median(frac_active_per_bin))
+            out["participation_frac_p95_%dms"    % int(bin_ms_participation)] = float(np.percentile(frac_active_per_bin, 95))
+        else:
+            out["participation_frac_mean_%dms"   % int(bin_ms_participation)] = np.nan
+            out["participation_frac_median_%dms" % int(bin_ms_participation)] = np.nan
+            out["participation_frac_p95_%dms"    % int(bin_ms_participation)] = np.nan
 
         # --- population rate & spectrum entropy ---
         pop_rate = S.sum(axis=0) / dt_s  # spikes/s across population
@@ -205,7 +222,7 @@ class Simulation:
         # Time step for synapse dynamics (only decay)
         self.synapse_dynamics.decay()
         # Update the synapse weights based on the traces from last step
-        self.plasticity.step(pre_spikes, post_spikes, reward=0.0)
+        # self.plasticity.step(pre_spikes, post_spikes, reward=0.0)
         # self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=1)
         # self.plasticity.step(post_spikes, I_syn, reward=1) 
         # Update synapse reaction class from the pre_spikes
