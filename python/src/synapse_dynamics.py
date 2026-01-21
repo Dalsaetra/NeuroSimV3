@@ -10,7 +10,8 @@ def _syn_current_numba(neurons_V,
                        g_GABA_A, E_GABA_A,
                        g_GABA_B, E_GABA_B,
                        LT_scale: float,
-                       weight_mult: float):          # <── scalar
+                       weight_mult: float,
+                       NMDA_V_rest: float):          # <── scalar
     """
     Compute total synaptic current for every neuron.
 
@@ -24,7 +25,7 @@ def _syn_current_numba(neurons_V,
         V = neurons_V[i]
 
         # NMDA voltage dependence
-        V_shift = (V + 80.0) / 60.0
+        V_shift = (V - NMDA_V_rest) / 60.0
         v2      = V_shift * V_shift
         nmda    = (v2 / (1.0 + v2))
 
@@ -41,7 +42,7 @@ def _syn_current_numba(neurons_V,
 
 class SynapseDynamics:
     def __init__(self, connectome: Connectome, dt, tau_AMPA=5, tau_NMDA=150, tau_GABA_A=6, tau_GABA_B=150,
-                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, LT_scale = 0.3, weight_mult = 1.0):
+                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, LT_scale = 1.0, weight_mult = 1.0, NMDA_V_rest=-60):
         """
         SynapseDynamics class to represent the synaptic dynamics of a neuron population.
         """
@@ -76,6 +77,7 @@ class SynapseDynamics:
 
         self.weight_mult = weight_mult
         self.LT_scale = LT_scale
+        self.NMDA_V_rest = NMDA_V_rest
 
 
     def decay(self):
@@ -141,4 +143,5 @@ class SynapseDynamics:
                                 self.g_GABA_A, self.E_GABA_A,
                                 self.g_GABA_B, self.E_GABA_B,
                                 self.LT_scale,
-                                self.weight_mult)
+                                self.weight_mult,
+                                self.NMDA_V_rest)

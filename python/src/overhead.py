@@ -151,6 +151,10 @@ class SimulationStats:
             out["participation_frac_median_%dms" % int(bin_ms_participation)] = np.nan
             out["participation_frac_p95_%dms"    % int(bin_ms_participation)] = np.nan
 
+        # --- global participation over full simulation ---
+        total_active = (S.sum(axis=1) > 0).sum()
+        out["participation_frac_total"] = float(total_active / float(N))
+
         # --- population rate & spectrum entropy ---
         pop_rate = S.sum(axis=0) / dt_s  # spikes/s across population
         if pop_smooth_ms and pop_smooth_ms > 0:
@@ -208,7 +212,7 @@ class Simulation:
         """
         Step the simulation forward in time.
         """
-        # Get the synaptic input from the synapse dynamics
+        # Get the synaptic input from the synapse dynamics (calls synapse_dynamics)
         I_syn = self.integrator(self.neuron_states.V, I_ext=I_ext)
         # Update the neuron states
         self.neuron_states.step(I_syn, self.dt)
@@ -222,7 +226,7 @@ class Simulation:
         # Time step for synapse dynamics (only decay)
         self.synapse_dynamics.decay()
         # Update the synapse weights based on the traces from last step
-        # self.plasticity.step(pre_spikes, post_spikes, reward=0.0)
+        # self.plasticity.step(pre_spikes, post_spikes, reward=1.0)
         # self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=1)
         # self.plasticity.step(post_spikes, I_syn, reward=1) 
         # Update synapse reaction class from the pre_spikes
