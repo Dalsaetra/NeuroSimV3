@@ -1,8 +1,9 @@
 import numpy as np
-from neuron_population import NeuronPopulation
 import networkx as nx
 import matplotlib.pyplot as plt
 from networkx.algorithms import smallworld
+
+from src.neuron_population import NeuronPopulation
 
 class Connectome:
     def __init__(self, max_synapses, neuron_population: NeuronPopulation):

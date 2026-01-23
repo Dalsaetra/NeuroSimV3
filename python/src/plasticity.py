@@ -1,6 +1,6 @@
 import numpy as np
 
-from connectome import Connectome
+from src.connectome import Connectome
 
 class SmoothActivity:
     def __init__(self, n_neurons, tau, dt, A=0.0001):
@@ -32,7 +32,7 @@ class SmoothActivity:
 
 
 class STDP:
-    def __init__(self, connectome: Connectome, dt, tau_plus=16.8, tau_minus=33.7, A_plus=1.0, A_minus=2.0, gaba_factor=-1.0):
+    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=20.0, A_plus=0.1, A_minus=0.12, gaba_factor=0.0):
         """
         Spike-Timing-Dependent Plasticity (STDP) class to represent the STDP mechanism.
         
@@ -100,9 +100,9 @@ class STDP:
         # weight_changes = np.zeros_like(self.connectome.W, dtype=np.float32)
 
         # Weight stabilizer
-        weight_stab = self.connectome.W * (1 - self.connectome.W)
-        weight_stab = np.clip(weight_stab, 0.001, 1)
-        # weight_stab = 1
+        # weight_stab = self.connectome.W * (1 - self.connectome.W)
+        # weight_stab = np.clip(weight_stab, 0.001, 1)
+        weight_stab = 1.0
 
         # Calculate potentiation (pre spikes before post spikes)
         pre_effect = self.pre_traces * self.A_plus * reward * self.dt
@@ -116,6 +116,9 @@ class STDP:
 
         # Apply weight changes to the connectome's weight matrix
         self.connectome.W += dw
+
+        # Cap weights to [0, 2.1]
+        np.clip(self.connectome.W, 0.0, 2.1, out=self.connectome.W)
 
     def step(self, pre_spikes, post_spikes, reward=1):
         # Update the synapse weights based on the traces from last step

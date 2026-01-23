@@ -1,5 +1,5 @@
 import numpy as np
-from neuron_templates import neuron_type_IZ
+from src.neuron_templates import neuron_type_IZ
 
 class NeuronPopulation:
     def __init__(self, n_neurons, neuron_types, 

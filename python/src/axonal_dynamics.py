@@ -1,10 +1,10 @@
 import numpy as np
 import heapq
 
-from connectome import Connectome
+from src.connectome import Connectome
 
 class AxonalDynamics:
-    def __init__(self, connectome: Connectome, dt, velocity = 0.25, dendritic_factor = 10.0):
+    def __init__(self, connectome: Connectome, dt, velocity = 1.0, dendritic_factor = 10.0):
         """
         AxonalDynamics class to represent the axonal dynamics of a neuron population.
         """

@@ -1,14 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from izhikevich import NeuronState
-from connectome import Connectome
-from axonal_dynamics import AxonalDynamics
-from synapse_dynamics import SynapseDynamics
-from neuron_templates import neuron_type_IZ
-from input_integration import InputIntegration
-from plasticity import STDP, T_STDP, PredictiveCoding, PredictiveCodingSaponati
-from utilities import bin_counts, power_spectrum_fft, spectral_entropy
+from src.izhikevich import NeuronState
+from src.connectome import Connectome
+from src.axonal_dynamics import AxonalDynamics
+from src.synapse_dynamics import SynapseDynamics
+from src.neuron_templates import neuron_type_IZ
+from src.input_integration import InputIntegration
+from src.plasticity import STDP, T_STDP, PredictiveCoding, PredictiveCodingSaponati
+from src.utilities import bin_counts, power_spectrum_fft, spectral_entropy
 
 class SimulationStats:
     def __init__(self):
@@ -99,6 +99,7 @@ class SimulationStats:
         out["rate_mean_Hz"] = float(np.nanmean(rates))
         out["rate_median_Hz"] = float(np.nanmedian(rates))
         out["rate_p95_Hz"] = float(np.nanpercentile(rates, 95))
+        active_mask = spike_counts_total > 0
 
         # --- ISI CV per neuron ---
         t = self.times_ms(dt_ms=dt_ms) if len(self.ts) != T else np.array(self.ts, float)
@@ -113,7 +114,24 @@ class SimulationStats:
                     cvs[i] = isi.std(ddof=1) / m
                 # refractory violations
                 refrac_viol[i] = int((isi < refractory_ms).sum())
-        out["ISI_CV_median"] = float(np.nanmedian(cvs))
+        valid_cvs = np.isfinite(cvs) & active_mask
+        out["ISI_CV_median"] = float(np.median(cvs[valid_cvs])) if np.any(valid_cvs) else 0.0
+        out["ISI_CV_mean"] = float(np.mean(cvs[valid_cvs])) if np.any(valid_cvs) else 0.0
+        inhib_mask = getattr(self, "inhibitory_mask", None)
+        if inhib_mask is not None and len(inhib_mask) == N:
+            inhib_mask = np.asarray(inhib_mask, dtype=bool)
+            exc_mask = ~inhib_mask
+            valid_exc = valid_cvs & exc_mask
+            valid_inh = valid_cvs & inhib_mask
+            out["ISI_CV_mean_E"] = float(np.mean(cvs[valid_exc])) if np.any(valid_exc) else 0.0
+            out["ISI_CV_mean_I"] = float(np.mean(cvs[valid_inh])) if np.any(valid_inh) else 0.0
+        if np.any(valid_cvs):
+            cv_vals = cvs[valid_cvs]
+            p90 = np.percentile(cv_vals, 90)
+            top_mask = cv_vals >= p90
+            out["ISI_CV_mean_top10pct"] = float(np.mean(cv_vals[top_mask])) if np.any(top_mask) else 0.0
+        else:
+            out["ISI_CV_mean_top10pct"] = 0.0
         out["refractory_violations_per_neuron"] = float(np.nanmean(refrac_viol))
 
         # --- spike count stats in bins ---
@@ -124,17 +142,20 @@ class SimulationStats:
             mu = counts.mean(axis=1)
             var = counts.var(axis=1, ddof=1)
             fanos = np.where(mu > 0, var / mu, np.nan)
-            out["Fano_median_%dms" % int(bin_ms_fano)] = float(np.nanmedian(fanos))
+            valid_fanos = np.isfinite(fanos) & active_mask
+            out["Fano_median_%dms" % int(bin_ms_fano)] = float(np.median(fanos[valid_fanos])) if np.any(valid_fanos) else 0.0
 
             # noise correlation (mean of off-diagonals of correlation matrix)
             X = counts - counts.mean(axis=1, keepdims=True)
             X /= (counts.std(axis=1, keepdims=True) + 1e-9)
             C = (X @ X.T) / X.shape[1]
             iu = np.triu_indices(N, k=1)
-            out["mean_noise_corr_%dms" % int(bin_ms_corr)] = float(np.nanmean(C[iu]))
+            corr_vals = C[iu]
+            valid_corr = np.isfinite(corr_vals)
+            out["mean_noise_corr_%dms" % int(bin_ms_corr)] = float(np.mean(corr_vals[valid_corr])) if np.any(valid_corr) else 0.0
         else:
-            out["Fano_median_%dms" % int(bin_ms_fano)] = np.nan
-            out["mean_noise_corr_%dms" % int(bin_ms_corr)] = np.nan
+            out["Fano_median_%dms" % int(bin_ms_fano)] = 0.0
+            out["mean_noise_corr_%dms" % int(bin_ms_corr)] = 0.0
 
         # --- participation sparsity ---
         part_steps = max(1, int(round(bin_ms_participation / dt_ms)))
@@ -179,6 +200,8 @@ class SimulationStats:
             Pxx = Pxx_accum / N
 
         out["pop_spec_entropy"] = spectral_entropy(Pxx)
+        out["pop_psd_freq_hz"] = f
+        out["pop_psd"] = Pxx
 
         # (Optional) add more: branching ratio, participation ratio, etc.
         return out
@@ -200,6 +223,7 @@ class Simulation:
         # self.plasticity = PredictiveCodingSaponati(connectome, self.dt)
 
         self.stats = SimulationStats()
+        self.stats.inhibitory_mask = connectome.neuron_population.inhibitory_mask.copy()
         self.stats.Vs.append(self.neuron_states.V.copy())
         self.stats.us.append(self.neuron_states.u.copy())
         self.stats.spikes.append(self.neuron_states.spike.copy())
@@ -226,7 +250,7 @@ class Simulation:
         # Time step for synapse dynamics (only decay)
         self.synapse_dynamics.decay()
         # Update the synapse weights based on the traces from last step
-        # self.plasticity.step(pre_spikes, post_spikes, reward=1.0)
+        self.plasticity.step(pre_spikes, post_spikes, reward=1.0)
         # self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=1)
         # self.plasticity.step(post_spikes, I_syn, reward=1) 
         # Update synapse reaction class from the pre_spikes
@@ -241,11 +265,27 @@ class Simulation:
         self.stats.spikes.append(self.neuron_states.spike.copy())
         self.stats.ts.append(self.t_now)
 
-    def plot_voltage_per_type(self, figsize=(10, 6)):
+    def plot_voltage_per_type(self, dt_ms=None, t_start_ms=None, t_stop_ms=None, figsize=(10, 6)):
         # Example voltage plot: plt.plot(np.array(sim.stats.Vs)[:, pop.get_neurons_from_type("b")])
         # Plot one voltage trace per neuron type, in same figure, with mean
         plt.figure(figsize=figsize)
         Vs = np.array(self.stats.Vs)  # shape (T, N)
+        if Vs.size == 0:
+            return
+        T = Vs.shape[0]
+        if len(self.stats.ts) == T:
+            t = np.array(self.stats.ts, dtype=float)
+        else:
+            t = self.stats.times_ms(dt_ms=dt_ms)
+        mask = np.ones_like(t, dtype=bool)
+        if t_start_ms is not None:
+            mask &= t >= t_start_ms
+        if t_stop_ms is not None:
+            mask &= t <= t_stop_ms
+        t_plot = t[mask]
+        Vs = Vs[mask, :]
+        if t_plot.size == 0:
+            return
         types = self.connectome.neuron_population.neuron_types
         for t in range(len(types)):
             type_name = types[t]
@@ -254,10 +294,86 @@ class Simulation:
                 continue
             plt.subplot(len(types), 1, t + 1)
             for i in indices:
-                plt.plot(Vs[:, i], alpha=0.3)
-            plt.plot(Vs[:, indices].mean(axis=1), color='black', linewidth=2)
+                plt.plot(t_plot, Vs[:, i], alpha=0.3)
+            plt.plot(t_plot, Vs[:, indices].mean(axis=1), color='black', linewidth=2)
             plt.title(f'Neuron type: {type_name}')
             plt.ylabel('V (mV)')
-            plt.xlabel('Time (steps)')
+            plt.xlabel('Time (ms)')
         plt.tight_layout()
         plt.show()
+
+    def plot_spike_raster(self, dt_ms=None, t_start_ms=None, t_stop_ms=None, figsize=(10, 6), s=8, alpha=0.7, legend=True, title=None, save_path=None):
+        """
+        Raster plot of spikes across all neurons.
+        Colors indicate inhibitory/excitatory; marker shape indicates neuron type.
+        """
+        S = self.stats.spikes_bool()
+        if S.size == 0:
+            return
+
+        N, T = S.shape
+        if len(self.stats.ts) == T:
+            t = np.array(self.stats.ts, dtype=float)
+        else:
+            t = self.stats.times_ms(dt_ms=dt_ms)
+        mask = np.ones_like(t, dtype=bool)
+        if t_start_ms is not None:
+            mask &= t >= t_start_ms
+        if t_stop_ms is not None:
+            mask &= t <= t_stop_ms
+        t = t[mask]
+        S = S[:, mask]
+        if t.size == 0:
+            return
+
+        pop = self.connectome.neuron_population
+        type_names = list(pop.neuron_types)
+        markers = ["o", "s", "^", "v", "D", "P", "X", "*", "<", ">", "h", "H", "d", "p"]
+        type_to_marker = {name: markers[i % len(markers)] for i, name in enumerate(type_names)}
+
+        excit_color = "#1f77b4"
+        inhib_color = "#d62728"
+
+        plt.figure(figsize=figsize)
+        ax = plt.gca()
+
+        for type_name in type_names:
+            indices = pop.get_neurons_from_type(type_name)
+            if len(indices) == 0:
+                continue
+
+            xs = []
+            ys = []
+            for i in indices:
+                spike_idx = np.flatnonzero(S[i])
+                if spike_idx.size == 0:
+                    continue
+                xs.append(t[spike_idx])
+                ys.append(np.full(spike_idx.size, i, dtype=float))
+
+            if not xs:
+                continue
+
+            xs = np.concatenate(xs)
+            ys = np.concatenate(ys)
+
+            type_idx = pop.type_index_from_neuron_type(type_name)
+            is_inhib = bool(pop.inhibitory[type_idx])
+            color = inhib_color if is_inhib else excit_color
+            label = f"{type_name} ({'I' if is_inhib else 'E'})"
+
+            ax.scatter(xs, ys, s=s, alpha=alpha, marker=type_to_marker[type_name],
+                       color=color, edgecolors="none", label=label)
+
+        ax.set_xlabel("Time (ms)")
+        ax.set_ylabel("Neuron index")
+        ax.set_ylim(-0.5, N - 0.5)
+        if legend:
+            ax.legend(loc="upper right", fontsize=8, ncol=2, frameon=False)
+        plt.tight_layout()
+        if title is not None:
+            plt.title(title)
+        if save_path is not None:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        else:
+            plt.show()

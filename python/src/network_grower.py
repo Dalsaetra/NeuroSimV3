@@ -1,13 +1,13 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from neuron_population import NeuronPopulation
-from connectome import Connectome
+from src.neuron_population import NeuronPopulation
+from src.connectome import Connectome
 import networkx as nx
 from collections import Counter
 from networkx.algorithms import smallworld
 from scipy.spatial import cKDTree
-from neuron_templates import neuron_type_IZ
+from src.neuron_templates import neuron_type_IZ
 
 
 def phase1_spatial_growth(N, layer_bounds, layer_densities, max_synapses, alpha_init):
