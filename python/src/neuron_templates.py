@@ -35,6 +35,8 @@ neuron_type_IZ = {
     "Accommodation": (0.02, 1, -55, 4),
     "Inhibition_Induced_Spiking": (-0.02, -1, -60, 8),
     "Inhibition_Induced_Bursting": (-0.026, -1, -45, 0),
+    "Regular_Spiking": (0.02, 0.2, -65, 8),
+    "Fast_Spiking": (0.1, 0.2, -65, 2),
 
     # From https://hippocampome.org/php/Izhikevich_model.php?refreshed
     "DG_Granule": (0.45, 0.003, 24.48, 50, 38, -77.4, -44.9, 15.49, -66.47),

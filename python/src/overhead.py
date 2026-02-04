@@ -265,6 +265,14 @@ class Simulation:
         self.stats.spikes.append(self.neuron_states.spike.copy())
         self.stats.ts.append(self.t_now)
 
+    def reset_stats(self):
+        self.stats = SimulationStats()
+        self.stats.inhibitory_mask = self.connectome.neuron_population.inhibitory_mask.copy()
+        self.stats.Vs.append(self.neuron_states.V.copy())
+        self.stats.us.append(self.neuron_states.u.copy())
+        self.stats.spikes.append(self.neuron_states.spike.copy())
+        self.stats.ts.append(self.t_now)
+
     def plot_voltage_per_type(self, dt_ms=None, t_start_ms=None, t_stop_ms=None, figsize=(10, 6)):
         # Example voltage plot: plt.plot(np.array(sim.stats.Vs)[:, pop.get_neurons_from_type("b")])
         # Plot one voltage trace per neuron type, in same figure, with mean

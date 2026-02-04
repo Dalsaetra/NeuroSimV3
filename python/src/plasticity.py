@@ -99,9 +99,11 @@ class STDP:
         """
         # weight_changes = np.zeros_like(self.connectome.W, dtype=np.float32)
 
+        max_weight = 2.1 / 100
+
         # Weight stabilizer
-        # weight_stab = self.connectome.W * (1 - self.connectome.W)
-        # weight_stab = np.clip(weight_stab, 0.001, 1)
+        # weight_stab = self.connectome.W * (max_weight - self.connectome.W)
+        # weight_stab = np.clip(weight_stab, 0.001, max_weight)
         weight_stab = 1.0
 
         # Calculate potentiation (pre spikes before post spikes)
@@ -117,8 +119,8 @@ class STDP:
         # Apply weight changes to the connectome's weight matrix
         self.connectome.W += dw
 
-        # Cap weights to [0, 2.1]
-        np.clip(self.connectome.W, 0.0, 2.1, out=self.connectome.W)
+        # Cap weights to [0, max_weight]
+        np.clip(self.connectome.W, 0.0, max_weight, out=self.connectome.W)
 
     def step(self, pre_spikes, post_spikes, reward=1):
         # Update the synapse weights based on the traces from last step

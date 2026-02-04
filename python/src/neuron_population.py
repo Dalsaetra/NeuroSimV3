@@ -36,6 +36,13 @@ class NeuronPopulation:
         if type not in self.neuron_types:
             raise ValueError(f"Neuron type {type} not found in neuron types.")
         params = neuron_type_IZ[type]
+        if len(params) == 4:
+            # Cet C=100 to make it compatible with full params
+            C = 1
+            params_new = [0.04, params[0], params[1], params[3], C, 0, -125, 30, params[2]]
+            params = params_new
+            self.bias = 140.0
+
         self.neuron_population[idx][:len(params)] = params
         self.neuron_population[idx][len(params):] = [self.delta_V, self.bias, self.threshold_mult, self.threshold_decay]
         neuron_type_index = self.type_index_from_neuron_type(type)

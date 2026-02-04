@@ -41,6 +41,8 @@ class NeuronState:
             self.step = self.IZ_Neuron_stepper_adapt
         elif stepper_type == "adapt_det":
             self.step = self.IZ_Neuron_stepper_adapt_deterministic
+        elif stepper_type == "simple":
+            self.step = self.IZ_Neuron_stepper_simple_model
         else:
             raise ValueError("Invalid stepper type. Choose from 'euler', 'euler_deterministic', 'adapt', or 'adapt_deterministic'.")
 
@@ -94,6 +96,26 @@ class NeuronState:
         self.u += np.clip(dt * du, -100, 100)
 
         spike = self.V >= self.Vpeak
+
+        self.V = np.where(spike, self.c, self.V)
+        self.u = np.where(spike, self.u + self.d, self.u)
+        self.spike = spike
+
+    def IZ_Neuron_stepper_simple_model(self, I, dt):
+        # states: states_per_neuron x n_neurons, params: params_per_neuron x n_neurons
+        # states = [V, u]
+        # params = [k, a, b, d, C, Vr, Vt, Vpeak, c, delta_V]
+        # Vectorized version of IZ_Neuron.step_euler
+
+        spike = np.zeros(self.n_neurons, dtype=bool)
+
+        dV = 0.04 * self.V**2 + 5*self.V + 140 - self.u + I
+        du = self.a * (self.b * self.V - self.u)
+
+        self.V += np.clip(dt * dV, -100, 100)
+        self.u += np.clip(dt * du, -100, 100)
+
+        spike = self.V >= 30.0
 
         self.V = np.where(spike, self.c, self.V)
         self.u = np.where(spike, self.u + self.d, self.u)
