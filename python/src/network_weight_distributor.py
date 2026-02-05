@@ -19,7 +19,7 @@ def assign_biological_weights(
     layer_scale: dict[tuple[int,int], float] | None = None,   # {(pre_layer, post_layer): scale}
     type_scale:  dict[tuple[str,str], float] | None = None,   # {(pre_ntype, post_ntype): scale}
     # --- clipping ---
-    w_min=1e-4, w_max=10.0,
+    w_min=1e-4, w_max=5.0,
     # --- homeostatic post normalization (separate E and I budgets) ---
     target_E_in=None,   # float or dict{post_node: float}; if None, skip E normalization
     target_I_in=None,   # same for I
@@ -119,5 +119,44 @@ def assign_biological_weights(
                     scale = tgt / s
                     for _, d in edges:
                         d[weight_attr] = float(np.clip(d[weight_attr] * scale, w_min, w_max))
+
+    return G
+
+
+
+def assign_lognormal_weights_for_ntype(
+    G: nx.DiGraph,
+    ntype: str,
+    *,
+    mu: float,
+    sigma: float,
+    w_min=1e-4,
+    w_max=5.0,
+    rng: np.random.Generator | None = None,
+    ntype_attr="ntype",
+    weight_attr="weight",
+    apply_to="pre",
+):
+    """
+    Assign lognormal weights to edges for a single neuron type.
+
+    apply_to: "pre" (default) applies to edges where pre-synaptic node has ntype.
+              "post" applies to edges where post-synaptic node has ntype.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    ntypes = nx.get_node_attributes(G, ntype_attr)
+
+    if apply_to not in ("pre", "post"):
+        raise ValueError("apply_to must be 'pre' or 'post'.")
+
+    for u, v, data in G.edges(data=True):
+        node = u if apply_to == "pre" else v
+        if ntypes.get(node, None) != ntype:
+            continue
+        w = float(rng.lognormal(mean=mu, sigma=sigma))
+        w = float(np.clip(w, w_min, w_max))
+        data[weight_attr] = w
 
     return G
