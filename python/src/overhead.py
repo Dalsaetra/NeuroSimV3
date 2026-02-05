@@ -68,11 +68,12 @@ class SimulationStats:
         self,
         dt_ms,
         bin_ms_fano=300.0,
-        bin_ms_corr=50.0,
         refractory_ms=1.5,
         spectrum_from="population",   # "population" or "mean_neuron"
         pop_smooth_ms=0.0,
-        bin_ms_participation=200.0     # <--- NEW: window for activity sparsity
+        bin_ms_participation=200.0,     # <--- NEW: window for activity sparsity
+        t_start_ms=None,
+        t_stop_ms=None,
     ):
         """
         Returns a dict with:
@@ -89,6 +90,18 @@ class SimulationStats:
         if S.size == 0:
             return out
         N, T = S.shape
+        t_full = self.times_ms(dt_ms=dt_ms) if len(self.ts) != T else np.array(self.ts, float)
+        mask = np.ones_like(t_full, dtype=bool)
+        if t_start_ms is not None:
+            mask &= t_full >= t_start_ms
+        if t_stop_ms is not None:
+            mask &= t_full <= t_stop_ms
+        if not np.all(mask):
+            S = S[:, mask]
+            t_full = t_full[mask]
+        N, T = S.shape
+        if T == 0:
+            return out
         T_ms = T * dt_ms
         dt_s = dt_ms / 1000.0
         fs_hz = 1.0 / dt_s
@@ -102,12 +115,12 @@ class SimulationStats:
         active_mask = spike_counts_total > 0
 
         # --- ISI CV per neuron ---
-        t = self.times_ms(dt_ms=dt_ms) if len(self.ts) != T else np.array(self.ts, float)
+        t = t_full
         cvs = np.full(N, np.nan, dtype=float)
         refrac_viol = np.zeros(N, dtype=int)
         for i in range(N):
             ts_i = t[S[i]]
-            if ts_i.size >= 3:
+            if ts_i.size >= 2:
                 isi = np.diff(ts_i)
                 m = isi.mean()
                 if m > 0:
@@ -134,28 +147,46 @@ class SimulationStats:
             out["ISI_CV_mean_top10pct"] = 0.0
         out["refractory_violations_per_neuron"] = float(np.nanmean(refrac_viol))
 
-        # --- spike count stats in bins ---
-        bin_steps = max(1, int(round(bin_ms_fano / dt_ms)))
-        counts = bin_counts(S, bin_steps=bin_steps)   # (N, n_bins)
-        if counts.shape[1] >= 2:
-            # Fano factor per neuron
-            mu = counts.mean(axis=1)
-            var = counts.var(axis=1, ddof=1)
-            fanos = np.where(mu > 0, var / mu, np.nan)
-            valid_fanos = np.isfinite(fanos) & active_mask
-            out["Fano_median_%dms" % int(bin_ms_fano)] = float(np.median(fanos[valid_fanos])) if np.any(valid_fanos) else 0.0
 
-            # noise correlation (mean of off-diagonals of correlation matrix)
-            X = counts - counts.mean(axis=1, keepdims=True)
-            X /= (counts.std(axis=1, keepdims=True) + 1e-9)
-            C = (X @ X.T) / X.shape[1]
-            iu = np.triu_indices(N, k=1)
-            corr_vals = C[iu]
-            valid_corr = np.isfinite(corr_vals)
-            out["mean_noise_corr_%dms" % int(bin_ms_corr)] = float(np.mean(corr_vals[valid_corr])) if np.any(valid_corr) else 0.0
-        else:
-            out["Fano_median_%dms" % int(bin_ms_fano)] = 0.0
-            out["mean_noise_corr_%dms" % int(bin_ms_corr)] = 0.0
+
+
+        # --- spike count stats in bins ---
+        fano_bins = [2, 10, 50, 100, 300, 500, 1000]
+        for bin_ms_fano in fano_bins:
+            bin_steps = max(1, int(round(bin_ms_fano / dt_ms)))
+            counts_fano = bin_counts(S, bin_steps=bin_steps)  # (N, n_fano_bins)
+            if counts_fano.shape[1] >= 2:
+                # Fano factor per neuron
+                mu = counts_fano.mean(axis=1)
+                var = counts_fano.var(axis=1, ddof=1)
+                fanos = np.where(mu > 0, var / mu, np.nan)
+                valid_fanos = np.isfinite(fanos) & active_mask
+                out["Fano_median_%dms" % int(bin_ms_fano)] = float(np.median(fanos[valid_fanos])) if np.any(valid_fanos) else 0.0
+            else:
+                out["Fano_median_%dms" % int(bin_ms_fano)] = 0.0
+
+        corr_bins = [2, 10, 50, 100, 300, 500, 1000]
+
+
+        for bin_ms_corr in corr_bins:
+            # choose bin so ~2.5 spikes/bin
+            # mean_rate = rates[active_mask].mean()  # Hz
+            # h_ms = max(10.0, 2500.0 / mean_rate)   # 2.5 spikes ≈ 2500 ms·Hz
+            h_ms = bin_ms_corr
+            bin_steps = int(round(h_ms / dt_ms))
+            counts_corr = bin_counts(S, bin_steps=bin_steps)   # (N, n_bins)
+
+            if counts_corr.shape[1] >= 2:
+                # noise correlation (mean of off-diagonals of correlation matrix)
+                X = counts_corr - counts_corr.mean(axis=1, keepdims=True)
+                X /= (counts_corr.std(axis=1, keepdims=True) + 1e-9)
+                C = (X @ X.T) / X.shape[1]
+                iu = np.triu_indices(N, k=1)
+                corr_vals = C[iu]
+                valid_corr = np.isfinite(corr_vals)
+                out["mean_noise_corr_%dms" % int(h_ms)] = float(np.mean(corr_vals[valid_corr])) if np.any(valid_corr) else 0.0
+            else:
+                out["mean_noise_corr_%dms" % int(h_ms)] = 0.0
 
         # --- participation sparsity ---
         part_steps = max(1, int(round(bin_ms_participation / dt_ms)))
@@ -207,20 +238,39 @@ class SimulationStats:
         return out
 
 class Simulation:
-    def __init__(self, connectome: Connectome, dt, stepper_type="adapt", state0=None):
+    def __init__(self, connectome: Connectome, dt, stepper_type="adapt", state0=None,
+                 enable_plasticity=True, plasticity="stdp", plasticity_kwargs=None, synapse_kwargs=None,
+                 plasticity_step="pre_post"):
         """
         Simulation class to represent the simulation of a neuron population.
         """
         self.dt = dt
         self.connectome = connectome
         self.axonal_dynamics = AxonalDynamics(connectome, self.dt)
-        self.synapse_dynamics = SynapseDynamics(connectome, self.dt)
+        synapse_kwargs = synapse_kwargs or {}
+        self.synapse_dynamics = SynapseDynamics(connectome, self.dt, **synapse_kwargs)
         self.neuron_states = NeuronState(connectome.neuron_population.neuron_population.T, stepper_type=stepper_type, state0=state0)
         self.integrator = InputIntegration(self.synapse_dynamics)
-        self.plasticity = STDP(connectome, self.dt)
-        # self.plasticity = T_STDP(connectome, self.dt)
-        # self.plasticity = PredictiveCoding(connectome, self.dt)
-        # self.plasticity = PredictiveCodingSaponati(connectome, self.dt)
+        plasticity_kwargs = plasticity_kwargs or {}
+        self.plasticity = None
+        self.plasticity_step = plasticity_step
+        if enable_plasticity:
+            if isinstance(plasticity, str):
+                key = plasticity.lower()
+                if key in ("stdp", "stpd"):
+                    self.plasticity = STDP(connectome, self.dt, **plasticity_kwargs)
+                elif key in ("t_stdp", "t-stdp", "tstdp"):
+                    self.plasticity = T_STDP(connectome, self.dt, **plasticity_kwargs)
+                elif key in ("predictive", "predictivecoding"):
+                    self.plasticity = PredictiveCoding(connectome, self.dt, **plasticity_kwargs)
+                elif key in ("saponati", "predictivecodingsaponati"):
+                    self.plasticity = PredictiveCodingSaponati(connectome, self.dt, **plasticity_kwargs)
+                else:
+                    raise ValueError(f"Unknown plasticity '{plasticity}'.")
+            elif callable(plasticity):
+                self.plasticity = plasticity(connectome, self.dt, **plasticity_kwargs)
+            else:
+                raise ValueError("plasticity must be a string key or a callable factory.")
 
         self.stats = SimulationStats()
         self.stats.inhibitory_mask = connectome.neuron_population.inhibitory_mask.copy()
@@ -243,16 +293,27 @@ class Simulation:
         post_spikes = self.neuron_states.spike # shape n_neurons x 1
         # Update the axonal dynamics
         pre_spikes = self.axonal_dynamics.check(self.t_now + self.dt) # shape n_neurons x max_synapses
-        self.pre_spikes = pre_spikes.copy()  # Store the pre_spikes for plasticity
+        if self.plasticity is not None and self.plasticity_step:
+            self.pre_spikes = pre_spikes.copy()  # Store only when plasticity uses it
+        else:
+            self.pre_spikes = None
         # Push the spikes to the axonal dynamics, do it after the pre_spikes are checked,
         # as the spikes comes from the end of the current step
         self.axonal_dynamics.push_many(post_spikes, self.t_now + self.dt)
         # Time step for synapse dynamics (only decay)
         self.synapse_dynamics.decay()
         # Update the synapse weights based on the traces from last step
-        self.plasticity.step(pre_spikes, post_spikes, reward=1.0)
-        # self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=1)
-        # self.plasticity.step(post_spikes, I_syn, reward=1) 
+        if self.plasticity is not None and self.plasticity_step:
+            if self.plasticity_step == "pre_post":
+                self.plasticity.step(pre_spikes, post_spikes, reward=1.0)
+            elif self.plasticity_step == "pre_post_v":
+                self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=1)
+            elif self.plasticity_step == "post_isyn":
+                self.plasticity.step(post_spikes, I_syn, reward=1)
+            elif callable(self.plasticity_step):
+                self.plasticity_step(self.plasticity, pre_spikes, post_spikes, I_syn, self.neuron_states.V, self)
+            else:
+                raise ValueError(f"Unknown plasticity_step '{self.plasticity_step}'.")
         # Update synapse reaction class from the pre_spikes
         self.synapse_dynamics.spike_input(pre_spikes)
         if spike_ext is not None:
