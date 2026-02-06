@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from src.izhikevich import NeuronState
 from src.connectome import Connectome
 from src.axonal_dynamics import AxonalDynamics
-from src.synapse_dynamics import SynapseDynamics
+from src.synapse_dynamics import SynapseDynamics, SynapseDynamics_Rise
 from src.neuron_templates import neuron_type_IZ
 from src.input_integration import InputIntegration
 from src.plasticity import STDP, T_STDP, PredictiveCoding, PredictiveCodingSaponati
@@ -68,7 +68,7 @@ class SimulationStats:
         self,
         dt_ms,
         bin_ms_fano=300.0,
-        refractory_ms=1.5,
+        refractory_ms=1.0,
         spectrum_from="population",   # "population" or "mean_neuron"
         pop_smooth_ms=0.0,
         bin_ms_participation=200.0,     # <--- NEW: window for activity sparsity
@@ -239,7 +239,7 @@ class SimulationStats:
 
 class Simulation:
     def __init__(self, connectome: Connectome, dt, stepper_type="adapt", state0=None,
-                 enable_plasticity=True, plasticity="stdp", plasticity_kwargs=None, synapse_kwargs=None,
+                 enable_plasticity=True, plasticity="stdp", plasticity_kwargs=None, rise_synapse=False, synapse_kwargs=None,
                  plasticity_step="pre_post"):
         """
         Simulation class to represent the simulation of a neuron population.
@@ -248,7 +248,10 @@ class Simulation:
         self.connectome = connectome
         self.axonal_dynamics = AxonalDynamics(connectome, self.dt)
         synapse_kwargs = synapse_kwargs or {}
-        self.synapse_dynamics = SynapseDynamics(connectome, self.dt, **synapse_kwargs)
+        if rise_synapse:
+            self.synapse_dynamics = SynapseDynamics_Rise(connectome, self.dt, **synapse_kwargs)
+        else:
+            self.synapse_dynamics = SynapseDynamics(connectome, self.dt, **synapse_kwargs)
         self.neuron_states = NeuronState(connectome.neuron_population.neuron_population.T, stepper_type=stepper_type, state0=state0)
         self.integrator = InputIntegration(self.synapse_dynamics)
         plasticity_kwargs = plasticity_kwargs or {}

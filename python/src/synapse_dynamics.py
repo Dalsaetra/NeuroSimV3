@@ -24,10 +24,14 @@ def _syn_current_numba(neurons_V,
     for i in nb.prange(n):          # multi-threaded loop over neurons
         V = neurons_V[i]
 
-        # NMDA voltage dependence
-        V_shift = (V - NMDA_V_rest) / 60.0
-        v2      = V_shift * V_shift
-        nmda    = (v2 / (1.0 + v2))
+        # NMDA voltage dependence (Izhikevich)
+        # V_shift = (V - NMDA_V_rest) / 60.0
+        # v2      = V_shift * V_shift
+        # nmda    = (v2 / (1.0 + v2))
+
+        # NMDA voltage dependence (Jahr & Stevens 1990)
+        Mg = 1.0  # mM, extracellular magnesium concentration
+        nmda = 1.0 / (1.0 + 0.28 * Mg * np.exp(-0.062 * V))
 
         # Short-term current (AMPA / GABA-A, etc.)
         I_AMPA = g_AMPA[i] * (E_AMPA - V)
@@ -70,6 +74,16 @@ class SynapseDynamics:
         self.g_GABA_A = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
         self.g_GABA_B = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
 
+        self.g_AMPA_max = 10.0
+        self.g_NMDA_max = 10.0
+        self.g_GABA_A_max = 10.0
+        self.g_GABA_B_max = 10.0
+
+        self.A_NMDA = 0.02 * 2
+        self.A_AMPA = 0.1 * 2
+        self.A_GABA_A = 0.12 * 2
+        self.A_GABA_B = 0.02 * 2
+
         self.AMPA_decay = np.exp(-dt / tau_AMPA)
         self.NMDA_decay = np.exp(-dt / tau_NMDA)
         self.GABA_A_decay = np.exp(-dt / tau_GABA_A)
@@ -95,22 +109,31 @@ class SynapseDynamics:
             # Element-wise multiplication of spikes and weights, keeping the shape of spikes
             WS = np.multiply(spikes[self.inhibitory_mask], self.connectome.W[self.inhibitory_mask]) # shape (n_neurons x max_synapses)
             inhib_input = np.bincount(self.connectome.M[self.inhibitory_mask].ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
-            self.g_GABA_A += inhib_input
-            self.g_GABA_B += inhib_input 
-
+            self.g_GABA_A += inhib_input * (1 - self.g_GABA_A) * self.A_GABA_A
+            self.g_GABA_B += inhib_input * (1 - self.g_GABA_B) * self.A_GABA_B
+            self.g_GABA_A = np.clip(self.g_GABA_A, 0, 1)
+            self.g_GABA_B = np.clip(self.g_GABA_B, 0, 1)
+        
 
         if not np.all(spikes[self.excitatory_mask] == 0):
             # Element-wise multiplication of spikes and weights, keeping the shape of spikes
             WS = np.multiply(spikes[self.excitatory_mask], self.connectome.W[self.excitatory_mask]) # shape (n_neurons x max_synapses)
             excit_input = np.bincount(self.connectome.M[self.excitatory_mask].ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
-            self.g_AMPA += excit_input
-            self.g_NMDA += excit_input
+            self.g_AMPA += excit_input * (1 - self.g_AMPA) * self.A_AMPA
+            self.g_NMDA += excit_input * (1 - self.g_NMDA) * self.A_NMDA
+            self.g_AMPA = np.clip(self.g_AMPA, 0, 1)
+            self.g_NMDA = np.clip(self.g_NMDA, 0, 1)
+
 
     def sensory_spike_input(self, weighted_spikes):
         # weighted_spikes: n_neurons x 1
 
-        self.g_AMPA += weighted_spikes
-        self.g_NMDA += weighted_spikes
+        self.g_AMPA += weighted_spikes * (1 - self.g_AMPA) * self.A_AMPA
+        self.g_AMPA = np.clip(self.g_AMPA, 0, 1)
+        # self.g_NMDA += weighted_spikes * (1 - self.g_NMDA) * self.A_NMDA
+
+        # Cap NMDA
+        # self.g_NMDA = np.clip(self.g_NMDA, 0, 1)
 
     # def __call__(self, neurons_V):
     #     # neurons_V: n_neurons x 1
@@ -138,10 +161,66 @@ class SynapseDynamics:
         out : 1-D float array (n_neurons,)
         """
         return _syn_current_numba(neurons_V,
-                                self.g_AMPA, self.E_AMPA,
-                                self.g_NMDA, self.E_NMDA,
+                                self.g_AMPA * self.g_AMPA_max, self.E_AMPA,
+                                self.g_NMDA * self.g_NMDA_max, self.E_NMDA,
                                 self.g_GABA_A, self.E_GABA_A,
                                 self.g_GABA_B, self.E_GABA_B,
                                 self.LT_scale,
                                 self.weight_mult,
                                 self.NMDA_V_rest)
+    
+class SynapseDynamics_Rise(SynapseDynamics):
+    def __init__(self, connectome: Connectome, dt, tau_AMPA=5, tau_NMDA=150, tau_GABA_A=6, tau_GABA_B=150,
+                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, LT_scale = 1.0, weight_mult = 1.0, NMDA_V_rest=-80):
+        """
+        SynapseDynamics class to represent the synaptic dynamics of a neuron population.
+        """
+        super().__init__(connectome, dt, tau_AMPA, tau_NMDA, tau_GABA_A, tau_GABA_B,
+                 E_AMPA, E_NMDA, E_GABA_A, E_GABA_B, LT_scale, weight_mult, NMDA_V_rest)
+
+        self.x_rise_NMDA = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
+        self.x_rise_GABA_B = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
+
+        self.x_rise_time_NMDA = 30
+        self.x_rise_factor = np.exp(-dt / self.x_rise_time_NMDA)
+        self.x_rise_time_GABA_B = 150
+        self.x_rise_factor_GABA_B = np.exp(-dt / self.x_rise_time_GABA_B)
+
+
+    def decay(self):
+        # Decay the synaptic conductances
+        self.g_AMPA *= self.AMPA_decay
+        self.g_NMDA *= self.NMDA_decay
+        self.g_GABA_A *= self.GABA_A_decay
+        self.g_GABA_B *= self.GABA_B_decay
+
+        self.x_rise_NMDA *= self.x_rise_factor
+        self.x_rise_GABA_B *= self.x_rise_factor_GABA_B
+
+
+    def spike_input(self, spikes):
+        # spikes: n_neurons x max_synapses
+
+        if not np.all(spikes[self.inhibitory_mask] == 0):
+            # Element-wise multiplication of spikes and weights, keeping the shape of spikes
+            WS = np.multiply(spikes[self.inhibitory_mask], self.connectome.W[self.inhibitory_mask]) # shape (n_neurons x max_synapses)
+            inhib_input = np.bincount(self.connectome.M[self.inhibitory_mask].ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
+            self.g_GABA_A += inhib_input * (1 - self.g_GABA_A) * self.A_GABA_A
+            # self.g_GABA_B += inhib_input
+            self.g_GABA_B += self.x_rise_GABA_B * self.dt * (1 - self.g_GABA_B) * self.A_GABA_B
+            self.g_GABA_A = np.clip(self.g_GABA_A, 0, 1)
+            self.g_GABA_B = np.clip(self.g_GABA_B, 0, 1)
+            # Divided by normalization factor to adjust such that it rises to 1 for +1 input
+            self.x_rise_GABA_B += inhib_input / 55.0
+            
+        if not np.all(spikes[self.excitatory_mask] == 0):
+            # Element-wise multiplication of spikes and weights, keeping the shape of spikes
+            WS = np.multiply(spikes[self.excitatory_mask], self.connectome.W[self.excitatory_mask]) # shape (n_neurons x max_synapses)
+            excit_input = np.bincount(self.connectome.M[self.excitatory_mask].ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
+            self.g_AMPA += excit_input * (1 - self.g_AMPA) * self.A_AMPA
+            # self.g_NMDA += excit_input
+            self.g_NMDA += self.x_rise_NMDA * self.dt * (1 - self.g_NMDA) * self.A_NMDA
+            # Divided by normalization factor to adjust such that it rises to 1 for +1 input
+            self.x_rise_NMDA += excit_input / 20.0
+            self.g_AMPA = np.clip(self.g_AMPA, 0, 1)
+            self.g_NMDA = np.clip(self.g_NMDA, 0, 1)
