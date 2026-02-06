@@ -11,7 +11,7 @@ def _syn_current_numba(neurons_V,
                        g_GABA_B, E_GABA_B,
                        LT_scale: float,
                        weight_mult: float,
-                       NMDA_V_rest: float):          # <── scalar
+                       NMDA_weight: float):          # <── scalar
     """
     Compute total synaptic current for every neuron.
 
@@ -25,7 +25,7 @@ def _syn_current_numba(neurons_V,
         V = neurons_V[i]
 
         # NMDA voltage dependence (Izhikevich)
-        # V_shift = (V - NMDA_V_rest) / 60.0
+        # V_shift = (V + 80) / 60.0
         # v2      = V_shift * V_shift
         # nmda    = (v2 / (1.0 + v2))
 
@@ -35,7 +35,7 @@ def _syn_current_numba(neurons_V,
 
         # Short-term current (AMPA / GABA-A, etc.)
         I_AMPA = g_AMPA[i] * (E_AMPA - V)
-        I_NMDA = g_NMDA[i] * (E_NMDA - V) * nmda * LT_scale
+        I_NMDA = g_NMDA[i] * (E_NMDA - V) * nmda * LT_scale * NMDA_weight[i]
         I_GABA_A = g_GABA_A[i] * (E_GABA_A - V)
         I_GABA_B = g_GABA_B[i] * (E_GABA_B - V) * LT_scale
 
@@ -46,7 +46,7 @@ def _syn_current_numba(neurons_V,
 
 class SynapseDynamics:
     def __init__(self, connectome: Connectome, dt, tau_AMPA=5, tau_NMDA=150, tau_GABA_A=6, tau_GABA_B=150,
-                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, LT_scale = 1.0, weight_mult = 1.0, NMDA_V_rest=-80):
+                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, LT_scale = 1.0, weight_mult = 1.0, NMDA_weight=None):
         """
         SynapseDynamics class to represent the synaptic dynamics of a neuron population.
         """
@@ -74,15 +74,15 @@ class SynapseDynamics:
         self.g_GABA_A = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
         self.g_GABA_B = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
 
-        self.g_AMPA_max = 10.0
-        self.g_NMDA_max = 10.0
-        self.g_GABA_A_max = 10.0
-        self.g_GABA_B_max = 10.0
+        self.g_AMPA_max = 100.0
+        self.g_NMDA_max = 100.0
+        self.g_GABA_A_max = 100.0
+        self.g_GABA_B_max = 100.0
 
-        self.A_NMDA = 0.02 * 2
-        self.A_AMPA = 0.1 * 2
-        self.A_GABA_A = 0.12 * 2
-        self.A_GABA_B = 0.02 * 2
+        self.A_NMDA = 0.001
+        self.A_AMPA = 0.001
+        self.A_GABA_A = 0.001
+        self.A_GABA_B = 0.001
 
         self.AMPA_decay = np.exp(-dt / tau_AMPA)
         self.NMDA_decay = np.exp(-dt / tau_NMDA)
@@ -91,7 +91,11 @@ class SynapseDynamics:
 
         self.weight_mult = weight_mult
         self.LT_scale = LT_scale
-        self.NMDA_V_rest = NMDA_V_rest
+        
+        if NMDA_weight is None:
+            self.NMDA_weight = np.ones(self.connectome.neuron_population.n_neurons, dtype=float)
+        else:
+            self.NMDA_weight = NMDA_weight
 
 
     def decay(self):
@@ -130,10 +134,9 @@ class SynapseDynamics:
 
         self.g_AMPA += weighted_spikes * (1 - self.g_AMPA) * self.A_AMPA
         self.g_AMPA = np.clip(self.g_AMPA, 0, 1)
-        # self.g_NMDA += weighted_spikes * (1 - self.g_NMDA) * self.A_NMDA
+        self.g_NMDA += weighted_spikes * (1 - self.g_NMDA) * self.A_NMDA
+        self.g_NMDA = np.clip(self.g_NMDA, 0, 1)
 
-        # Cap NMDA
-        # self.g_NMDA = np.clip(self.g_NMDA, 0, 1)
 
     # def __call__(self, neurons_V):
     #     # neurons_V: n_neurons x 1
@@ -167,16 +170,16 @@ class SynapseDynamics:
                                 self.g_GABA_B, self.E_GABA_B,
                                 self.LT_scale,
                                 self.weight_mult,
-                                self.NMDA_V_rest)
+                                self.NMDA_weight)
     
 class SynapseDynamics_Rise(SynapseDynamics):
     def __init__(self, connectome: Connectome, dt, tau_AMPA=5, tau_NMDA=150, tau_GABA_A=6, tau_GABA_B=150,
-                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, LT_scale = 1.0, weight_mult = 1.0, NMDA_V_rest=-80):
+                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, LT_scale = 1.0, weight_mult = 1.0, NMDA_weight=None):
         """
         SynapseDynamics class to represent the synaptic dynamics of a neuron population.
         """
         super().__init__(connectome, dt, tau_AMPA, tau_NMDA, tau_GABA_A, tau_GABA_B,
-                 E_AMPA, E_NMDA, E_GABA_A, E_GABA_B, LT_scale, weight_mult, NMDA_V_rest)
+                 E_AMPA, E_NMDA, E_GABA_A, E_GABA_B, LT_scale, weight_mult, NMDA_weight)
 
         self.x_rise_NMDA = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
         self.x_rise_GABA_B = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
@@ -224,3 +227,103 @@ class SynapseDynamics_Rise(SynapseDynamics):
             self.x_rise_NMDA += excit_input / 20.0
             self.g_AMPA = np.clip(self.g_AMPA, 0, 1)
             self.g_NMDA = np.clip(self.g_NMDA, 0, 1)
+
+
+class SynapseDynamics_Uncapped:
+    def __init__(self, connectome: Connectome, dt, tau_AMPA=5, tau_NMDA=150, tau_GABA_A=6, tau_GABA_B=150,
+                 E_AMPA=0, E_NMDA=0, E_GABA_A=-70, E_GABA_B=-90, LT_scale = 1.0, weight_mult = 1.0, NMDA_weight=None):
+        """
+        SynapseDynamics class to represent the synaptic dynamics of a neuron population.
+        """
+
+        self.connectome = connectome
+
+        self.inhibitory_mask = connectome.neuron_population.inhibitory_mask
+        self.excitatory_mask = ~self.inhibitory_mask
+
+        self.dt = dt
+
+        self.tau_AMPA = tau_AMPA
+        self.tau_NMDA = tau_NMDA
+        self.tau_GABA_A = tau_GABA_A
+        self.tau_GABA_B = tau_GABA_B
+
+        self.E_AMPA = E_AMPA
+        self.E_NMDA = E_NMDA
+        self.E_GABA_A = E_GABA_A
+        self.E_GABA_B = E_GABA_B
+
+
+        self.g_AMPA = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
+        self.g_NMDA = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
+        self.g_GABA_A = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
+        self.g_GABA_B = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
+
+        self.AMPA_decay = np.exp(-dt / tau_AMPA)
+        self.NMDA_decay = np.exp(-dt / tau_NMDA)
+        self.GABA_A_decay = np.exp(-dt / tau_GABA_A)
+        self.GABA_B_decay = np.exp(-dt / tau_GABA_B)
+
+        self.weight_mult = weight_mult
+        self.LT_scale = LT_scale
+        self.NMDA_weight = NMDA_weight
+
+        # Just for logging purposes, to know the scale of the conductances
+        self.g_AMPA_max = 1.0
+        self.g_NMDA_max = 1.0
+        self.g_GABA_A_max = 1.0
+        self.g_GABA_B_max = 1.0
+
+
+    def decay(self):
+        # Decay the synaptic conductances
+        self.g_AMPA *= self.AMPA_decay
+        self.g_NMDA *= self.NMDA_decay
+        self.g_GABA_A *= self.GABA_A_decay
+        self.g_GABA_B *= self.GABA_B_decay
+
+
+    def spike_input(self, spikes):
+        # spikes: n_neurons x max_synapses
+
+        if not np.all(spikes[self.inhibitory_mask] == 0):
+            # Element-wise multiplication of spikes and weights, keeping the shape of spikes
+            WS = np.multiply(spikes[self.inhibitory_mask], self.connectome.W[self.inhibitory_mask]) # shape (n_neurons x max_synapses)
+            inhib_input = np.bincount(self.connectome.M[self.inhibitory_mask].ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
+            self.g_GABA_A += inhib_input
+            self.g_GABA_B += inhib_input 
+
+
+        if not np.all(spikes[self.excitatory_mask] == 0):
+            # Element-wise multiplication of spikes and weights, keeping the shape of spikes
+            WS = np.multiply(spikes[self.excitatory_mask], self.connectome.W[self.excitatory_mask]) # shape (n_neurons x max_synapses)
+            excit_input = np.bincount(self.connectome.M[self.excitatory_mask].ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
+            self.g_AMPA += excit_input
+            self.g_NMDA += excit_input
+
+    def sensory_spike_input(self, weighted_spikes):
+        # weighted_spikes: n_neurons x 1
+
+        self.g_AMPA += weighted_spikes
+        self.g_NMDA += weighted_spikes
+
+    def __call__(self, neurons_V):
+        """
+        Calculate the synaptic current based on the neuron's membrane potential.
+
+        Parameters
+        ----------
+        neurons_V : 1-D float array (n_neurons,)
+
+        Returns
+        -------
+        out : 1-D float array (n_neurons,)
+        """
+        return _syn_current_numba(neurons_V,
+                                self.g_AMPA, self.E_AMPA,
+                                self.g_NMDA, self.E_NMDA,
+                                self.g_GABA_A, self.E_GABA_A,
+                                self.g_GABA_B, self.E_GABA_B,
+                                self.LT_scale,
+                                self.weight_mult,
+                                self.NMDA_weight)

@@ -2,7 +2,7 @@ import numpy as np
 from src.synapse_dynamics import SynapseDynamics
 
 class InputIntegration:
-    def __init__(self, synapse_dynamics: SynapseDynamics, noise=0):
+    def __init__(self, synapse_dynamics: SynapseDynamics, noise=200.0):
         """
         InputIntegration class to represent the input integration of a neuron population.
         """

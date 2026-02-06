@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from src.izhikevich import NeuronState
 from src.connectome import Connectome
 from src.axonal_dynamics import AxonalDynamics
-from src.synapse_dynamics import SynapseDynamics, SynapseDynamics_Rise
+from src.synapse_dynamics import SynapseDynamics, SynapseDynamics_Rise, SynapseDynamics_Uncapped
 from src.neuron_templates import neuron_type_IZ
 from src.input_integration import InputIntegration
 from src.plasticity import STDP, T_STDP, PredictiveCoding, PredictiveCodingSaponati
@@ -237,10 +237,17 @@ class SimulationStats:
         # (Optional) add more: branching ratio, participation ratio, etc.
         return out
 
+class DebugLogger:
+    def __init__(self):
+        self.s_ampa = []
+        self.s_nmda = []
+        self.s_gaba_a = []
+        self.s_gaba_b = []
+
 class Simulation:
     def __init__(self, connectome: Connectome, dt, stepper_type="adapt", state0=None,
-                 enable_plasticity=True, plasticity="stdp", plasticity_kwargs=None, rise_synapse=False, synapse_kwargs=None,
-                 plasticity_step="pre_post"):
+                 enable_plasticity=True, plasticity="stdp", plasticity_kwargs=None, synapse_type="standard", synapse_kwargs=None,
+                 plasticity_step="pre_post", enable_debug_logger=False):
         """
         Simulation class to represent the simulation of a neuron population.
         """
@@ -248,10 +255,14 @@ class Simulation:
         self.connectome = connectome
         self.axonal_dynamics = AxonalDynamics(connectome, self.dt)
         synapse_kwargs = synapse_kwargs or {}
-        if rise_synapse:
+        if synapse_type == "rise":
             self.synapse_dynamics = SynapseDynamics_Rise(connectome, self.dt, **synapse_kwargs)
-        else:
+        elif synapse_type == "standard":
             self.synapse_dynamics = SynapseDynamics(connectome, self.dt, **synapse_kwargs)
+        elif synapse_type == "uncapped":
+            self.synapse_dynamics = SynapseDynamics_Uncapped(connectome, self.dt, **synapse_kwargs)
+        else:
+            raise ValueError(f"Unknown synapse_type '{synapse_type}'.")
         self.neuron_states = NeuronState(connectome.neuron_population.neuron_population.T, stepper_type=stepper_type, state0=state0)
         self.integrator = InputIntegration(self.synapse_dynamics)
         plasticity_kwargs = plasticity_kwargs or {}
@@ -280,6 +291,15 @@ class Simulation:
         self.stats.Vs.append(self.neuron_states.V.copy())
         self.stats.us.append(self.neuron_states.u.copy())
         self.stats.spikes.append(self.neuron_states.spike.copy())
+
+
+        self.enable_debug_logger = enable_debug_logger
+        if self.enable_debug_logger:
+            self.debug_logger = DebugLogger()
+            self.debug_logger.s_ampa.append(self.synapse_dynamics.g_AMPA.copy())
+            self.debug_logger.s_nmda.append(self.synapse_dynamics.g_NMDA.copy())
+            self.debug_logger.s_gaba_a.append(self.synapse_dynamics.g_GABA_A.copy())
+            self.debug_logger.s_gaba_b.append(self.synapse_dynamics.g_GABA_B.copy())
 
         self.t_now = 0.0
         self.stats.ts.append(self.t_now)
@@ -328,6 +348,12 @@ class Simulation:
         self.stats.us.append(self.neuron_states.u.copy())
         self.stats.spikes.append(self.neuron_states.spike.copy())
         self.stats.ts.append(self.t_now)
+
+        if self.enable_debug_logger:
+            self.debug_logger.s_ampa.append(self.synapse_dynamics.g_AMPA.copy() * self.synapse_dynamics.g_AMPA_max)
+            self.debug_logger.s_nmda.append(self.synapse_dynamics.g_NMDA.copy() * self.synapse_dynamics.g_NMDA_max)
+            self.debug_logger.s_gaba_a.append(self.synapse_dynamics.g_GABA_A.copy() * self.synapse_dynamics.g_GABA_A_max)
+            self.debug_logger.s_gaba_b.append(self.synapse_dynamics.g_GABA_B.copy() * self.synapse_dynamics.g_GABA_B_max)
 
     def reset_stats(self):
         self.stats = SimulationStats()
