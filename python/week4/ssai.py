@@ -22,13 +22,13 @@ from src.external_inputs import *
 
 # %%
 weight_scale = 1.0
-g = 0.25
+g = 8.46910914570179
 
 J_I = weight_scale * g
 J_E = weight_scale
 delay_mean = 1.5
 delay_std = delay_mean * 0.2
-v_ext = 0.1
+v_ext = 0.14433240945426995
 
 excitatory_type = "ss4"
 inhibitory_type = "b"
@@ -70,7 +70,7 @@ for i in range(1000):
 
 # %%
 # Redistribute lognormally
-G = assign_lognormal_weights_for_ntype(G, "ss4", mu=0.5, sigma=0.5, w_max=10.0)
+G = assign_lognormal_weights_for_ntype(G, "ss4", mu=0.0, sigma=0.7580915700075603, w_max=20.0)
 
 # %%
 # Plot ss4 weight distribution
@@ -106,7 +106,7 @@ connectome.nx_to_connectome(G)
 
 # %%
 nmda_weight = np.ones(connectome.neuron_population.n_neurons, dtype=float)
-nmda_weight[pop.inhibitory_mask.astype(bool)] = 1.0
+nmda_weight[pop.inhibitory_mask.astype(bool)] = 0.22622509290032272
 # Invert to make excitatory neurons have NMDA weight 1, inhibitory 0
 # nmda_weight
 
@@ -129,25 +129,25 @@ state0 = (Vs,
 # sim = Simulation(connectome, dt, stepper_type="simple", state0=state0,
 #                  enable_plasticity=False)
 sim = Simulation(connectome, dt, stepper_type="euler_det", state0=state0,
-                 enable_plasticity=False, synapse_kwargs={"LT_scale": 1.0, "NMDA_weight": nmda_weight}, synapse_type="uncapped",
+                 enable_plasticity=False, synapse_kwargs={"LT_scale": 1.0, "NMDA_weight": nmda_weight}, synapse_type="standard",
                  enable_debug_logger=True)
 
 # rate = np.zeros(n_neurons)
-poisson = PoissonInput(n_neurons, rate=v_ext, amplitude=1.0)
+poisson = PoissonInput(n_neurons, rate=v_ext, amplitude=646.8332617517251)
 
 from tqdm import tqdm
 
 for i in tqdm(range(7500)):
     sensory_spikes = poisson(dt)
-    # sensory_spikes[pop.inhibitory_mask.astype(bool)] = False
+    sensory_spikes[pop.inhibitory_mask.astype(bool)] = False
     sim.step(spike_ext=sensory_spikes)
 
-for i in tqdm(range(7500)):
+for i in tqdm(range(10000)):
     sim.step()
 
 sim.plot_voltage_per_type(figsize=(6, 6))
 
-stats = sim.stats.compute_metrics(dt, bin_ms_participation=300)
+stats = sim.stats.compute_metrics(dt, bin_ms_participation=300, t_start_ms=750.0, t_stop_ms=1750.0)
 
 isi_mean = stats['ISI_CV_mean']
 isi_top = stats["ISI_CV_mean_top10pct"]

@@ -74,15 +74,15 @@ class SynapseDynamics:
         self.g_GABA_A = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
         self.g_GABA_B = np.zeros(self.connectome.neuron_population.n_neurons, dtype=float)
 
-        self.g_AMPA_max = 100.0
-        self.g_NMDA_max = 100.0
-        self.g_GABA_A_max = 100.0
-        self.g_GABA_B_max = 100.0
+        self.g_AMPA_max = 871.945569504923
+        self.g_NMDA_max = 410.0975149438278
+        self.g_GABA_A_max = 15.738564183551592
+        self.g_GABA_B_max = 559.3498415788509
 
-        self.A_NMDA = 0.001
-        self.A_AMPA = 0.001
-        self.A_GABA_A = 0.001
-        self.A_GABA_B = 0.001
+        self.A_AMPA = 0.022151834174967227
+        self.A_NMDA = 0.0009261714236274896
+        self.A_GABA_A = 0.0021420375844243655
+        self.A_GABA_B = 5.392925483735209e-05
 
         self.AMPA_decay = np.exp(-dt / tau_AMPA)
         self.NMDA_decay = np.exp(-dt / tau_NMDA)
@@ -166,8 +166,8 @@ class SynapseDynamics:
         return _syn_current_numba(neurons_V,
                                 self.g_AMPA * self.g_AMPA_max, self.E_AMPA,
                                 self.g_NMDA * self.g_NMDA_max, self.E_NMDA,
-                                self.g_GABA_A, self.E_GABA_A,
-                                self.g_GABA_B, self.E_GABA_B,
+                                self.g_GABA_A * self.g_GABA_A_max, self.E_GABA_A,
+                                self.g_GABA_B * self.g_GABA_B_max, self.E_GABA_B,
                                 self.LT_scale,
                                 self.weight_mult,
                                 self.NMDA_weight)
