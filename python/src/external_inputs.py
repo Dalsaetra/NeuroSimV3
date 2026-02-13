@@ -39,7 +39,7 @@ class PoissonInput:
         Parameters
         ----------
         dt : float
-            Simulation timestep (s).
+            Simulation timestep (ms).
 
         Returns
         -------
@@ -47,7 +47,7 @@ class PoissonInput:
             Weighted spikes: amplitude[i] if a spike occurred, else 0.
         """
         # Spike probability per neuron per time step
-        p_spike = self.rate * dt
+        p_spike = self.rate * dt / 1000.0  # Convert rate from Hz to per ms
         rand = self.rng.random(self.n_neurons)
         spikes = (rand < p_spike).astype(float) * self.amplitude
         return spikes
@@ -86,13 +86,13 @@ class SinusoidalInput:
         Parameters
         ----------
         dt : float
-            Simulation timestep (s).
+            Simulation timestep (ms).
 
         Returns
         -------
         I_ext : np.ndarray, shape (n_neurons,)
             Sinusoidal current input.
         """
-        self.t += dt
+        self.t += dt / 1000.0  # Convert dt from ms to s
         I = self.amplitude * np.sin(2 * np.pi * self.freq * self.t + self.phase)
         return I
