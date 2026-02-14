@@ -112,6 +112,17 @@ class SimulationStats:
         out["rate_mean_Hz"] = float(np.nanmean(rates))
         out["rate_median_Hz"] = float(np.nanmedian(rates))
         out["rate_p95_Hz"] = float(np.nanpercentile(rates, 95))
+        inhib_mask_rates = getattr(self, "inhibitory_mask", None)
+        active2_mask = spike_counts_total >= 2
+        if inhib_mask_rates is not None and len(inhib_mask_rates) == N:
+            inhib_mask_rates = np.asarray(inhib_mask_rates, dtype=bool)
+            exc_mask_rates = ~inhib_mask_rates
+            out["rate_mean_Hz_E"] = float(np.nanmean(rates[exc_mask_rates])) if np.any(exc_mask_rates) else 0.0
+            out["rate_mean_Hz_I"] = float(np.nanmean(rates[inhib_mask_rates])) if np.any(inhib_mask_rates) else 0.0
+            exc_active2 = exc_mask_rates & active2_mask
+            inh_active2 = inhib_mask_rates & active2_mask
+            out["rate_mean_Hz_E_active2spk"] = float(np.nanmean(rates[exc_active2])) if np.any(exc_active2) else 0.0
+            out["rate_mean_Hz_I_active2spk"] = float(np.nanmean(rates[inh_active2])) if np.any(inh_active2) else 0.0
         active_mask = spike_counts_total > 0
 
         # --- ISI CV per neuron ---
@@ -466,11 +477,12 @@ class Simulation:
         ax.set_xlabel("Time (ms)")
         ax.set_ylabel("Neuron index")
         ax.set_ylim(-0.5, N - 0.5)
+        if title is not None:
+            ax.set_title(title, pad=10)
         if legend:
             ax.legend(loc="upper right", fontsize=8, ncol=2, frameon=False)
-        plt.tight_layout()
-        if title is not None:
-            plt.title(title)
+        # Leave extra top margin so longer titles are not clipped by tight layout.
+        plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
         if save_path is not None:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
         else:
