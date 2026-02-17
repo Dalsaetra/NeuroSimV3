@@ -22,16 +22,20 @@ from src.external_inputs import *
 
 # %%
 weight_scale = 1.0
-g = 8.46910914570179
+g = 1.2984752590298583
 
 J_I = weight_scale * g
 J_E = weight_scale
-delay_mean = 1.5
-delay_std = delay_mean * 0.2
-v_ext = 0.14433240945426995
+delay_mean_E = 1.5
+delay_std_E = delay_mean_E * 0.2
+delay_mean_I = 1.5
+delay_std_I = delay_mean_I * 0.2
+v_ext = 0.45527031369449
 
 excitatory_type = "ss4"
 inhibitory_type = "b"
+
+seed = 1234
 
 # %% [markdown]
 # ## Generate network
@@ -39,38 +43,50 @@ inhibitory_type = "b"
 # %%
 G = nx.DiGraph()
 
+rng = np.random.default_rng(seed)
+
+
+n_neurons = 1000
+
+I_percent = 0.2
+
+n_excitatory = int(n_neurons * (1 - I_percent))
+
+density = 0.15
+
 # Add 1000 nodes
-for i in range(1000):
+for i in range(n_neurons):
     G.add_node(i)
 
 # Assign 800 nodes as excitatory and 200 as inhibitory
 # excitatory_nodes = random.sample(range(1000), 800)
-for i in range(800):
+
+for i in range(n_excitatory):
         G.nodes[i]['inhibitory'] = False
         G.nodes[i]['ntype'] = excitatory_type
         G.nodes[i]['layer'] = 0
 
-for i in range(800, 1000):
+for i in range(n_excitatory, n_neurons):
         G.nodes[i]['inhibitory'] = True
         G.nodes[i]['ntype'] = inhibitory_type
         G.nodes[i]['layer'] = 0
 
 # For each node, draw m outgoing edges to random nodes
-n_out = 150
-for i in range(1000):
-    targets = random.sample(range(1000), n_out)
+n_out = int(n_neurons * density)
+for i in range(n_neurons):
+    targets = rng.choice(range(n_neurons), n_out, replace=False)
     for target in targets:
         if G.nodes[i]['inhibitory']:
             weight = J_I
-            delay = max(0.1, np.random.normal(1.5, 0.3))
+            delay = max(0.1, rng.normal(delay_mean_I, delay_std_I))
         else:
             weight = J_E
-            delay = max(0.1, np.random.normal(delay_mean, delay_std))
+            delay = max(0.1, rng.normal(delay_mean_E, delay_std_E))
         G.add_edge(i, target, weight=weight, distance=delay)
 
 # %%
 # Redistribute lognormally
-G = assign_lognormal_weights_for_ntype(G, "ss4", mu=0.0, sigma=0.7580915700075603, w_max=20.0)
+G = assign_lognormal_weights_for_ntype(G, "ss4", mu=0.0, sigma=1.643570, w_max=100.0)
 
 # %%
 # Plot ss4 weight distribution
@@ -106,7 +122,7 @@ connectome.nx_to_connectome(G)
 
 # %%
 nmda_weight = np.ones(connectome.neuron_population.n_neurons, dtype=float)
-nmda_weight[pop.inhibitory_mask.astype(bool)] = 0.22622509290032272
+nmda_weight[pop.inhibitory_mask.astype(bool)] = 0.959685703507305
 # Invert to make excitatory neurons have NMDA weight 1, inhibitory 0
 # nmda_weight
 
@@ -133,26 +149,28 @@ sim = Simulation(connectome, dt, stepper_type="euler_det", state0=state0,
                  enable_debug_logger=True)
 
 # rate = np.zeros(n_neurons)
-poisson = PoissonInput(n_neurons, rate=v_ext, amplitude=646.8332617517251)
+poisson = PoissonInput(n_neurons, rate=v_ext, amplitude=2.44625509556019)
 
 from tqdm import tqdm
 
-for i in tqdm(range(7500)):
+for i in tqdm(range(5000)):
     sensory_spikes = poisson(dt)
     sensory_spikes[pop.inhibitory_mask.astype(bool)] = False
     sim.step(spike_ext=sensory_spikes)
 
-for i in tqdm(range(10000)):
+for i in tqdm(range(15000)):
     sim.step()
 
-sim.plot_voltage_per_type(figsize=(6, 6))
+# sim.plot_voltage_per_type(figsize=(6, 6))
 
 stats = sim.stats.compute_metrics(dt, bin_ms_participation=300, t_start_ms=750.0, t_stop_ms=1750.0)
 
 isi_mean = stats['ISI_CV_mean']
-isi_top = stats["ISI_CV_mean_top10pct"]
+# isi_top = stats["ISI_CV_mean_top10pct"]
+isi_E = stats['ISI_CV_mean_E']
+isi_I = stats['ISI_CV_mean_I']
 
-sim.plot_spike_raster(figsize=(10, 6), title=f"ISI_CV_Mean: {isi_mean:.3f}, ISI_CV_top10pct: {isi_top:.3f}", t_start_ms=0.0, t_stop_ms=3000.0)
+sim.plot_spike_raster(figsize=(10, 6), title=f"ISI_CV_Mean: {isi_mean:.3f}, ISI_CV_E: {isi_E:.3f}, ISI_CV_I: {isi_I:.3f}", t_start_ms=0.0, t_stop_ms=3000.0)
 
 
 # sim.stats.compute_metrics(dt, bin_ms_participation=300, t_start_ms=750.0, t_stop_ms=2250.0)
