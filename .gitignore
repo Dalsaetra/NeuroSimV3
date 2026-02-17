@@ -9,6 +9,8 @@ __pycache__/
 *.png
 *.csv
 *.json
+*.toml
+*.db
 
 # Distribution / packaging
 .Python
