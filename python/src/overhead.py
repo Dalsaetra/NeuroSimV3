@@ -414,6 +414,7 @@ class Simulation:
     def plot_spike_raster(self, dt_ms=None, t_start_ms=None, t_stop_ms=None, figsize=(10, 6), s=8, alpha=0.7, legend=True, title=None, save_path=None):
         """
         Raster plot of spikes across all neurons.
+        Neurons are displayed in contiguous blocks ordered by neuron type.
         Colors indicate inhibitory/excitatory; marker shape indicates neuron type.
         """
         S = self.stats.spikes_bool()
@@ -443,6 +444,16 @@ class Simulation:
         excit_color = "#1f77b4"
         inhib_color = "#d62728"
 
+        # Build a stable index remap so rows are grouped by neuron type.
+        ordered_indices = []
+        for type_name in type_names:
+            idx = sorted(pop.get_neurons_from_type(type_name))
+            ordered_indices.extend(idx)
+        ordered_set = set(ordered_indices)
+        remainder = [i for i in range(N) if i not in ordered_set]
+        ordered_indices.extend(remainder)
+        row_of_neuron = {old_idx: new_row for new_row, old_idx in enumerate(ordered_indices)}
+
         plt.figure(figsize=figsize)
         ax = plt.gca()
 
@@ -458,7 +469,7 @@ class Simulation:
                 if spike_idx.size == 0:
                     continue
                 xs.append(t[spike_idx])
-                ys.append(np.full(spike_idx.size, i, dtype=float))
+                ys.append(np.full(spike_idx.size, row_of_neuron[i], dtype=float))
 
             if not xs:
                 continue
@@ -475,14 +486,14 @@ class Simulation:
                        color=color, edgecolors="none", label=label)
 
         ax.set_xlabel("Time (ms)")
-        ax.set_ylabel("Neuron index")
+        ax.set_ylabel("Neuron index (grouped by type)")
         ax.set_ylim(-0.5, N - 0.5)
         if title is not None:
             ax.set_title(title, pad=10)
         if legend:
-            ax.legend(loc="upper right", fontsize=8, ncol=2, frameon=False)
-        # Leave extra top margin so longer titles are not clipped by tight layout.
-        plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+            ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8, ncol=1, frameon=False, borderaxespad=0.0)
+        # Leave room on the right for the external legend.
+        plt.tight_layout(rect=(0.0, 0.0, 0.84, 0.96))
         if save_path is not None:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
         else:

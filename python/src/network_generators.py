@@ -1,6 +1,19 @@
 import numpy as np
 import networkx as nx
 from numpy.random import default_rng
+from typing import Mapping, Sequence
+
+try:
+    from src.network_weight_distributor import (
+        assign_biological_weights,
+        assign_lognormal_weights_for_ntype,
+    )
+except Exception:  # pragma: no cover - fallback when running inside src/
+    from network_weight_distributor import (
+        assign_biological_weights,
+        assign_lognormal_weights_for_ntype,
+    )
+
 rng = default_rng()
 
 def spatial_pa_directed(n=2000, m=3, box_dim=2, alpha=2.0, 
@@ -430,5 +443,459 @@ def spatial_pa_directed_var_out_reciprocal(
 
     # Assign positions as node attributes
     nx.set_node_attributes(G, pos, name=pos_attr)
+
+    return G
+
+
+def _largest_remainder_counts(n_total: int, fractions: Mapping[str, float]) -> dict[str, int]:
+    keys = list(fractions.keys())
+    vals = np.array([float(fractions[k]) for k in keys], dtype=float)
+    if vals.size == 0:
+        raise ValueError("fractions must contain at least one type.")
+    if np.any(vals < 0):
+        raise ValueError("fractions must be non-negative.")
+    if np.all(vals == 0):
+        vals = np.ones_like(vals, dtype=float)
+    vals = vals / vals.sum()
+    raw = vals * int(n_total)
+    base = np.floor(raw).astype(int)
+    rem = int(n_total - base.sum())
+    if rem > 0:
+        order = np.argsort(-(raw - base))
+        base[order[:rem]] += 1
+    return {k: int(v) for k, v in zip(keys, base)}
+
+
+def _pair_key(pre_inhibitory: bool, post_inhibitory: bool) -> str:
+    if not pre_inhibitory and not post_inhibitory:
+        return "EE"
+    if not pre_inhibitory and post_inhibitory:
+        return "EI"
+    if pre_inhibitory and not post_inhibitory:
+        return "IE"
+    return "II"
+
+
+def _sample_kout_heavy_tailed(
+    ntype: str,
+    rng: np.random.Generator,
+    outdegree_config_by_type: Mapping[str, Mapping[str, float]] | None,
+    *,
+    default_dist: str = "lognormal",
+    default_params: tuple[float, ...] = (2.2, 0.85),
+    min_k: int = 1,
+    max_k: int | None = None,
+) -> int:
+    cfg = {} if outdegree_config_by_type is None else dict(outdegree_config_by_type.get(ntype, {}))
+    dist = str(cfg.get("dist", default_dist)).lower()
+    params = cfg.get("params", default_params)
+    if not isinstance(params, Sequence):
+        raise ValueError(f"outdegree params for type '{ntype}' must be a tuple/list.")
+
+    if dist == "lognormal":
+        if len(params) != 2:
+            raise ValueError("lognormal outdegree params must be (mu, sigma).")
+        mu, sigma = float(params[0]), float(params[1])
+        k = int(np.floor(np.exp(rng.normal(mu, sigma))))
+    elif dist == "pareto":
+        if len(params) != 2:
+            raise ValueError("pareto outdegree params must be (shape, scale).")
+        shape, scale = float(params[0]), float(params[1])
+        k = int(np.floor((rng.pareto(shape) + 1.0) * scale))
+    elif dist in ("neg-bin", "negative_binomial", "nb"):
+        if len(params) != 2:
+            raise ValueError("negative binomial outdegree params must be (mean, dispersion).")
+        mean, phi = float(params[0]), float(params[1])
+        p = phi / (phi + mean)
+        k = int(rng.negative_binomial(phi, p))
+    elif dist == "constant":
+        if len(params) != 1:
+            raise ValueError("constant outdegree params must be (k,).")
+        k = int(params[0])
+    else:
+        raise ValueError(f"Unsupported out-degree distribution '{dist}'.")
+
+    k = max(int(min_k), k)
+    if max_k is not None:
+        k = min(k, int(max_k))
+    return int(k)
+
+
+def _normalize_weights_total(
+    G: nx.DiGraph,
+    mode: str,
+    target: float | Mapping[int, float],
+    *,
+    weight_attr: str = "weight",
+):
+    if mode not in ("in", "out"):
+        raise ValueError("normalize_mode must be None, 'in', or 'out'.")
+
+    def _target_for(node: int) -> float:
+        if isinstance(target, Mapping):
+            return float(target.get(node, 0.0))
+        return float(target)
+
+    for node in G.nodes():
+        tgt = _target_for(node)
+        if tgt <= 0:
+            continue
+        if mode == "in":
+            edges = [(u, node) for u in G.predecessors(node)]
+        else:
+            edges = [(node, v) for v in G.successors(node)]
+        if not edges:
+            continue
+        s = float(sum(max(0.0, G[u][v].get(weight_attr, 0.0)) for u, v in edges))
+        if s <= 0:
+            continue
+        scale = tgt / s
+        for u, v in edges:
+            G[u][v][weight_attr] = float(max(0.0, G[u][v].get(weight_attr, 0.0) * scale))
+
+
+def _normalize_out_weights_by_preclass(
+    G: nx.DiGraph,
+    *,
+    target_E: float | Mapping[int, float] | None,
+    target_I: float | Mapping[int, float] | None,
+    inhib_attr: str = "inhibitory",
+    weight_attr: str = "weight",
+):
+    def _target_for(node: int, target_val):
+        if target_val is None:
+            return None
+        if isinstance(target_val, Mapping):
+            return float(target_val.get(node, 0.0))
+        return float(target_val)
+
+    for node in G.nodes():
+        is_inh = bool(G.nodes[node].get(inhib_attr, False))
+        tgt = _target_for(node, target_I if is_inh else target_E)
+        if tgt is None or tgt <= 0:
+            continue
+        edges = [(node, v) for v in G.successors(node)]
+        if not edges:
+            continue
+        s = float(sum(max(0.0, G[u][v].get(weight_attr, 0.0)) for u, v in edges))
+        if s <= 0:
+            continue
+        scale = tgt / s
+        for u, v in edges:
+            G[u][v][weight_attr] = float(max(0.0, G[u][v].get(weight_attr, 0.0) * scale))
+
+
+def _assign_normal_weights_for_ntype(
+    G: nx.DiGraph,
+    ntype: str,
+    *,
+    mu: float,
+    sigma: float,
+    w_min: float,
+    w_max: float,
+    rng: np.random.Generator,
+    ntype_attr: str = "ntype",
+    weight_attr: str = "weight",
+    apply_to: str = "pre",
+):
+    if apply_to not in ("pre", "post"):
+        raise ValueError("apply_to must be 'pre' or 'post'.")
+
+    for u, v, data in G.edges(data=True):
+        node = u if apply_to == "pre" else v
+        if G.nodes[node].get(ntype_attr, None) != ntype:
+            continue
+        w = float(rng.normal(loc=mu, scale=sigma))
+        data[weight_attr] = float(np.clip(w, w_min, w_max))
+
+
+def _reindex_graph_grouped_by_ntype(
+    G: nx.DiGraph,
+    *,
+    ntype_attr: str = "ntype",
+    ntype_order: Sequence[str] | None = None,
+) -> nx.DiGraph:
+    nodes = list(G.nodes())
+    if not nodes:
+        return G
+
+    if ntype_order is None:
+        # Stable deterministic default: alphabetical type order.
+        ordered_types = sorted({str(G.nodes[u].get(ntype_attr, "")) for u in nodes})
+    else:
+        ordered_types = [str(t) for t in ntype_order]
+
+    known_type_set = set(ordered_types)
+    extra_types = sorted(
+        {str(G.nodes[u].get(ntype_attr, "")) for u in nodes if str(G.nodes[u].get(ntype_attr, "")) not in known_type_set}
+    )
+    full_type_order = ordered_types + extra_types
+    rank = {t: i for i, t in enumerate(full_type_order)}
+
+    nodes_sorted = sorted(nodes, key=lambda u: (rank.get(str(G.nodes[u].get(ntype_attr, "")), len(rank)), int(u)))
+    mapping = {old: new for new, old in enumerate(nodes_sorted)}
+    return nx.relabel_nodes(G, mapping, copy=True)
+
+
+def generate_spatial_ei_network(
+    n_neurons: int = 1000,
+    *,
+    space_dim: int = 2,
+    distance_scale: float = 1.0,
+    seed: int | None = None,
+    type_fractions: Mapping[str, float] | None = None,
+    inhibitory_types: Sequence[str] = ("b",),
+    layer: int = 0,
+    p0_by_pair: Mapping[str, float] | None = None,
+    lambda_by_preclass: Mapping[str, float] | None = None,
+    outdegree_config_by_type: Mapping[str, Mapping[str, float]] | None = None,
+    outdegree_min: int = 1,
+    outdegree_max: int | None = None,
+    weight_pair_scale: Mapping[str, float] | None = None,
+    use_weight_distributor: bool = True,
+    mu_E: float = -2.0,
+    sigma_E: float = 1.0,
+    mu_I: float = -1.6,
+    sigma_I: float = 0.6,
+    weight_dist_by_ntype: Mapping[str, str] | None = None,
+    lognormal_by_ntype: Mapping[str, tuple[float, float]] | None = None,
+    weight_clip: tuple[float, float] = (1e-4, 100.0),
+    normalize_mode: str | None = None,
+    normalize_target: float | Mapping[int, float] | None = None,
+    normalize_target_out_E: float | Mapping[int, float] | None = None,
+    normalize_target_out_I: float | Mapping[int, float] | None = None,
+    pos_attr: str = "pos",
+    distance_attr: str = "distance",
+    weight_attr: str = "weight",
+    multiplicity_attr: str = "multiplicity",
+):
+    """
+    Generate a directed E/I spatial network using:
+      1) k_out drawn from heavy-tailed distributions per type,
+      2) target sampling with replacement from p0 * exp(-d/lambda),
+      3) lognormal weights by neuron type, then optional in/out normalization.
+    `distance_scale` only affects the stored edge `distance_attr` values
+    (e.g., for delays). Connectivity uses unscaled geometric distances.
+    Use `weight_dist_by_ntype` to pick per-type distribution:
+      - "lognormal" (default)
+      - "normal" (Gaussian)
+    Per-type `(mu, sigma)` are supplied via `lognormal_by_ntype`
+    (legacy name retained for compatibility).
+    If `group_indices_by_ntype=True`, node IDs are relabeled so indices are
+    grouped contiguously by `ntype` in `group_ntype_order` (or alphabetical).
+    For `normalize_mode="out"`, you can set separate targets with
+    `normalize_target_out_E` and `normalize_target_out_I`.
+
+    Node attributes:
+      - inhibitory: bool
+      - ntype: str
+      - layer: int
+      - pos: tuple
+
+    Edge attributes:
+      - distance: float
+      - multiplicity: int
+      - weight: float
+    """
+    if n_neurons <= 0:
+        raise ValueError("n_neurons must be > 0.")
+    if space_dim not in (2, 3):
+        raise ValueError("space_dim must be 2 or 3.")
+    if distance_scale <= 0:
+        raise ValueError("distance_scale must be > 0.")
+
+    rng = np.random.default_rng(seed)
+
+    if type_fractions is None:
+        type_fractions = {"ss4": 0.8, "b": 0.2}
+    inhibitory_types = set(inhibitory_types)
+    ntype_counts = _largest_remainder_counts(n_neurons, type_fractions)
+
+    node_types = []
+    for ntype, count in ntype_counts.items():
+        node_types.extend([ntype] * int(count))
+    rng.shuffle(node_types)
+
+    p0 = {"EE": 0.15, "EI": 0.15, "IE": 0.15, "II": 0.15}
+    if p0_by_pair is not None:
+        p0.update({k: float(v) for k, v in p0_by_pair.items()})
+
+    lam = {"E": 0.2, "I": 0.2}
+    if lambda_by_preclass is not None:
+        lam.update({k: float(v) for k, v in lambda_by_preclass.items()})
+
+    w_pair_scale = {"EE": 1.0, "EI": 1.0, "IE": 1.0, "II": 1.0}
+    if weight_pair_scale is not None:
+        w_pair_scale.update({k: float(v) for k, v in weight_pair_scale.items()})
+
+    coords = rng.random((n_neurons, space_dim))
+    G = nx.DiGraph()
+    for i in range(n_neurons):
+        ntype = str(node_types[i])
+        is_inh = ntype in inhibitory_types
+        G.add_node(
+            i,
+            inhibitory=bool(is_inh),
+            ntype=ntype,
+            layer=int(layer),
+            **{pos_attr: tuple(coords[i])},
+        )
+
+    # Draw k_out and connect with replacement. Multiplicity stores repeated draws.
+    for u in range(n_neurons):
+        pre_inh = bool(G.nodes[u]["inhibitory"])
+        pre_class = "I" if pre_inh else "E"
+        k_out = _sample_kout_heavy_tailed(
+            G.nodes[u]["ntype"],
+            rng,
+            outdegree_config_by_type,
+            min_k=outdegree_min,
+            max_k=outdegree_max,
+        )
+        if k_out <= 0 or n_neurons <= 1:
+            continue
+
+        d_raw = np.linalg.norm(coords - coords[u], axis=1)
+        d_prob = d_raw.copy()
+        d_prob[u] = np.inf
+
+        probs = np.zeros(n_neurons, dtype=float)
+        for v in range(n_neurons):
+            if v == u:
+                continue
+            post_inh = bool(G.nodes[v]["inhibitory"])
+            key = _pair_key(pre_inh, post_inh)
+            lambda_pre = max(1e-12, lam[pre_class])
+            probs[v] = max(0.0, p0[key]) * np.exp(-d_prob[v] / lambda_pre)
+
+        total = float(probs.sum())
+        if total <= 0 or not np.isfinite(total):
+            probs = np.ones(n_neurons, dtype=float)
+            probs[u] = 0.0
+            total = float(probs.sum())
+        probs /= total
+
+        drawn = rng.choice(np.arange(n_neurons), size=int(k_out), replace=True, p=probs)
+        counts = np.bincount(drawn, minlength=n_neurons)
+        counts[u] = 0
+
+        targets = np.where(counts > 0)[0]
+        for v in targets:
+            mult = int(counts[v])
+            dist_uv = float(d_raw[v] * float(distance_scale))
+            G.add_edge(
+                u,
+                int(v),
+                **{
+                    distance_attr: dist_uv,
+                    multiplicity_attr: mult,
+                },
+            )
+
+    # Ensure all edges carry distance even if altered externally later.
+    for u, v in G.edges():
+        if distance_attr not in G[u][v]:
+            G[u][v][distance_attr] = float(np.linalg.norm(coords[u] - coords[v]) * float(distance_scale))
+        if multiplicity_attr not in G[u][v]:
+            G[u][v][multiplicity_attr] = 1
+
+    # Base lognormal draw from the shared weight distributor utility.
+    if use_weight_distributor:
+        assign_biological_weights(
+            G,
+            rng=rng,
+            mu_E=mu_E,
+            sigma_E=sigma_E,
+            mu_I=mu_I,
+            sigma_I=sigma_I,
+            use_distance=False,
+            w_min=float(weight_clip[0]),
+            w_max=float(weight_clip[1]),
+            weight_attr=weight_attr,
+        )
+    else:
+        for u, v in G.edges():
+            G[u][v][weight_attr] = 1.0
+
+    # Optional per-ntype overrides for finer control:
+    # - choose distribution with weight_dist_by_ntype[ntype] in {"lognormal","normal"}.
+    # - choose (mu, sigma) with lognormal_by_ntype[ntype] (name kept for compatibility).
+    if lognormal_by_ntype or weight_dist_by_ntype:
+        override_types = set()
+        if lognormal_by_ntype:
+            override_types.update(str(k) for k in lognormal_by_ntype.keys())
+        if weight_dist_by_ntype:
+            override_types.update(str(k) for k in weight_dist_by_ntype.keys())
+
+        for ntype in override_types:
+            dist_name = "lognormal"
+            if weight_dist_by_ntype is not None:
+                dist_name = str(weight_dist_by_ntype.get(str(ntype), "lognormal")).lower()
+
+            if lognormal_by_ntype is not None and ntype in lognormal_by_ntype:
+                mu, sigma = lognormal_by_ntype[ntype]
+            else:
+                is_inh_type = str(ntype) in inhibitory_types
+                mu = mu_I if is_inh_type else mu_E
+                sigma = sigma_I if is_inh_type else sigma_E
+
+            if dist_name in ("lognormal", "log_norm", "log-normal"):
+                assign_lognormal_weights_for_ntype(
+                    G,
+                    ntype=str(ntype),
+                    mu=float(mu),
+                    sigma=float(sigma),
+                    w_min=float(weight_clip[0]),
+                    w_max=float(weight_clip[1]),
+                    rng=rng,
+                    ntype_attr="ntype",
+                    weight_attr=weight_attr,
+                    apply_to="pre",
+                )
+            elif dist_name in ("normal", "gaussian", "gaussian_normal"):
+                _assign_normal_weights_for_ntype(
+                    G,
+                    ntype=str(ntype),
+                    mu=float(mu),
+                    sigma=float(sigma),
+                    w_min=float(weight_clip[0]),
+                    w_max=float(weight_clip[1]),
+                    rng=rng,
+                    ntype_attr="ntype",
+                    weight_attr=weight_attr,
+                    apply_to="pre",
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported weight distribution '{dist_name}' for type '{ntype}'. "
+                    "Use 'lognormal' or 'normal'."
+                )
+
+    # Apply multiplicity and E/I pair scaling.
+    for u, v in G.edges():
+        pre_inh = bool(G.nodes[u]["inhibitory"])
+        post_inh = bool(G.nodes[v]["inhibitory"])
+        key = _pair_key(pre_inh, post_inh)
+        mult = int(max(1, G[u][v].get(multiplicity_attr, 1)))
+        scale = float(w_pair_scale.get(key, 1.0))
+        w = float(G[u][v].get(weight_attr, 1.0))
+        G[u][v][weight_attr] = float(np.clip(w * mult * scale, weight_clip[0], weight_clip[1]))
+
+    if normalize_mode is not None:
+        if normalize_mode == "out" and (normalize_target_out_E is not None or normalize_target_out_I is not None):
+            default_target = 1.0 if normalize_target is None else normalize_target
+            target_E = normalize_target_out_E if normalize_target_out_E is not None else default_target
+            target_I = normalize_target_out_I if normalize_target_out_I is not None else default_target
+            _normalize_out_weights_by_preclass(
+                G,
+                target_E=target_E,
+                target_I=target_I,
+                inhib_attr="inhibitory",
+                weight_attr=weight_attr,
+            )
+        else:
+            if normalize_target is None:
+                normalize_target = 1.0
+            _normalize_weights_total(G, mode=normalize_mode, target=normalize_target, weight_attr=weight_attr)
 
     return G
