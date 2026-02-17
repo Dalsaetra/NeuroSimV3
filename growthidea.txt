@@ -1,0 +1,50 @@
+- Main thought
+	- Instead of generating the graph as a probabilities for connections between layers and neuron types, we first build the small-world graph and then assign excitatory/inhibitory neurons afterwards
+		- Go opposite direction as before
+	- Even better
+		- First distribute nodes spatially in a 2D/3D space
+			- Maybe local clusters where you want layers
+			- Calculate inter-neuron distance matrix
+		- Apply a synapse "growth" algorithm that hopefully follows small-world properties with heavy-tailed number of connections
+		- Assign neuron types
+			- Assign excitatory/inhibitory relative to overall distribution 80/20 and relative to number of in/out connections (hubs are most often excitatory)
+			- Next assign more specific neuron types, which is also relative to number of in/out connections as well as their overall distribution in the brain (maybe more basket inhibitory cells than other types of cells)
+- My theory for biological brain development
+	- Mostly static decided by DNA
+		- Brain regions gives what distributions of neuron types
+		- Neuron density per brain region
+		- General direction/flow of neuron signals
+			- Can be represented by a vector field where each position represents the bias toward the neuron flow going in that direction. Thus there is still a probability that synapses can grow for short distances in the opposite direction of the flow, but the longer synapses can only form along the flow
+		- More advanced
+			- Number of axons per neuron type
+			- Main axon of big pyramidal neurons always starts going with the flow and must go certain minimum distance to be able to project to distant regions
+			- Growing dendrites as well, not just axons
+				- Some hub neurons like pyramidal cells have "global" dendrites which grows against the flow, and makes is such that more local neurons in other layers/regions can connect to the neuron
+				- Can be implemented afterwards, by keeping track of if the dendrite length dominates the axon length of that connection, and adjust the travel speed in `axonal_dynamics` respectfully
+				- Can also precompute the time it takes for a signal to travel between the two neurons, to have one matrix, instead of both a distance and a speed matrix
+				- Other local neurons have in comparison 0 length dendrites
+	- What is more emergent
+		- The neuron differentiation/density is governed by the probabilities given brain region
+		- The growth of synapses is guided by the flow field
+			- Local connections can easily go against this flow field, but longer projections almost never go against flow
+		- Growth of synapses is also of course guided by the distance to the next neuron
+		- Synapse weights / plasticity
+- From growth to graph
+	- After finishing simulating with this growth algorithm, we detect the directional connections, and convert this to a static connectome $M$, as well as the distances $L$ and/or the signal time $S$ for each synapse (matrices of same shape as $M$)
+	- Now $M$ can be used in simulation
+- Problems
+	- When/how to apply neuron types
+		- Do we distribute the neurons first in a static spatial distribution, then grow synapses, find hubs etc., and then finally assign neuron types?
+			- Pros
+				- We know what neurons are hubs, which are most often the neurons in the middle of clusters and can then assign appropriate neuron types thereafter
+			- Cons
+				- We cannot apply neuron type specific properties during growth, such as number of axons and if they have a upstream projecting dendrite
+		- Or do we assign neuron types before synapse growth
+			- Pros
+				- Can apply neuron type specific properties during entire growth
+			- Cons
+				- Hubs may then form on the edges of clusters, which is not very realistic
+		- Solution
+			- We divide into two phases:
+				1. Initial local axonal growth, to establish hubs
+				2. After hubs are established, we can differentiate types, to begin growth of projecting dendrites and axons for hubs, and choose neurons which stop growth / prune synapses because they are "satisfied" with their connections
