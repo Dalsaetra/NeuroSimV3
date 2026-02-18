@@ -55,6 +55,11 @@ class SynapseDynamics:
 
         self.inhibitory_mask = connectome.neuron_population.inhibitory_mask
         self.excitatory_mask = ~self.inhibitory_mask
+        self.n_neurons = self.connectome.neuron_population.n_neurons
+        self._inh_src_idx = np.flatnonzero(self.inhibitory_mask)
+        self._exc_src_idx = np.flatnonzero(self.excitatory_mask)
+        self._M_inh = self.connectome.M[self.inhibitory_mask]
+        self._M_exc = self.connectome.M[self.excitatory_mask]
 
         self.dt = dt
 
@@ -109,33 +114,37 @@ class SynapseDynamics:
     def spike_input(self, spikes):
         # spikes: n_neurons x max_synapses
 
-        if not np.all(spikes[self.inhibitory_mask] == 0):
-            # Element-wise multiplication of spikes and weights, keeping the shape of spikes
-            WS = np.multiply(spikes[self.inhibitory_mask], self.connectome.W[self.inhibitory_mask]) # shape (n_neurons x max_synapses)
-            inhib_input = np.bincount(self.connectome.M[self.inhibitory_mask].ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
+        inh_rows, inh_cols = np.nonzero(spikes[self.inhibitory_mask])
+        if inh_rows.size:
+            src_rows = self._inh_src_idx[inh_rows]
+            weights = self.connectome.W[src_rows, inh_cols]
+            targets = self._M_inh[inh_rows, inh_cols]
+            inhib_input = np.bincount(targets, weights=weights, minlength=self.n_neurons)
             self.g_GABA_A += inhib_input * (1 - self.g_GABA_A) * self.A_GABA_A
             self.g_GABA_B += inhib_input * (1 - self.g_GABA_B) * self.A_GABA_B
-            self.g_GABA_A = np.clip(self.g_GABA_A, 0, 1)
-            self.g_GABA_B = np.clip(self.g_GABA_B, 0, 1)
+            np.clip(self.g_GABA_A, 0, 1, out=self.g_GABA_A)
+            np.clip(self.g_GABA_B, 0, 1, out=self.g_GABA_B)
         
 
-        if not np.all(spikes[self.excitatory_mask] == 0):
-            # Element-wise multiplication of spikes and weights, keeping the shape of spikes
-            WS = np.multiply(spikes[self.excitatory_mask], self.connectome.W[self.excitatory_mask]) # shape (n_neurons x max_synapses)
-            excit_input = np.bincount(self.connectome.M[self.excitatory_mask].ravel(), weights=WS.ravel(), minlength=self.connectome.M.shape[0])
+        exc_rows, exc_cols = np.nonzero(spikes[self.excitatory_mask])
+        if exc_rows.size:
+            src_rows = self._exc_src_idx[exc_rows]
+            weights = self.connectome.W[src_rows, exc_cols]
+            targets = self._M_exc[exc_rows, exc_cols]
+            excit_input = np.bincount(targets, weights=weights, minlength=self.n_neurons)
             self.g_AMPA += excit_input * (1 - self.g_AMPA) * self.A_AMPA
             self.g_NMDA += excit_input * (1 - self.g_NMDA) * self.A_NMDA
-            self.g_AMPA = np.clip(self.g_AMPA, 0, 1)
-            self.g_NMDA = np.clip(self.g_NMDA, 0, 1)
+            np.clip(self.g_AMPA, 0, 1, out=self.g_AMPA)
+            np.clip(self.g_NMDA, 0, 1, out=self.g_NMDA)
 
 
     def sensory_spike_input(self, weighted_spikes):
         # weighted_spikes: n_neurons x 1
 
         self.g_AMPA += weighted_spikes * (1 - self.g_AMPA) * self.A_AMPA
-        self.g_AMPA = np.clip(self.g_AMPA, 0, 1)
+        np.clip(self.g_AMPA, 0, 1, out=self.g_AMPA)
         self.g_NMDA += weighted_spikes * (1 - self.g_NMDA) * self.A_NMDA
-        self.g_NMDA = np.clip(self.g_NMDA, 0, 1)
+        np.clip(self.g_NMDA, 0, 1, out=self.g_NMDA)
 
 
     # def __call__(self, neurons_V):
