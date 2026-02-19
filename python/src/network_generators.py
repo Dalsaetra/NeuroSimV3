@@ -1,7 +1,7 @@
 import numpy as np
 import networkx as nx
 from numpy.random import default_rng
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 try:
     from src.network_weight_distributor import (
@@ -897,5 +897,350 @@ def generate_spatial_ei_network(
             if normalize_target is None:
                 normalize_target = 1.0
             _normalize_weights_total(G, mode=normalize_mode, target=normalize_target, weight_attr=weight_attr)
+
+    return G
+
+
+def _counts_from_distribution(
+    n_total: int,
+    names: Sequence[str],
+    distribution: Mapping[str, float] | Sequence[float] | None,
+) -> dict[str, int]:
+    names = [str(x) for x in names]
+    if n_total <= 0:
+        raise ValueError("n_total must be > 0.")
+    if len(names) == 0:
+        raise ValueError("Need at least one compartment name.")
+
+    if distribution is None:
+        frac = {name: 1.0 / len(names) for name in names}
+        return _largest_remainder_counts(n_total, frac)
+
+    if isinstance(distribution, Mapping):
+        vals = np.array([float(distribution.get(name, 0.0)) for name in names], dtype=float)
+    else:
+        vals = np.asarray(distribution, dtype=float)
+        if vals.shape[0] != len(names):
+            raise ValueError("distribution length must match number of compartments.")
+
+    if np.any(vals < 0):
+        raise ValueError("distribution values must be non-negative.")
+
+    # Treat as counts only when all entries are whole numbers and sum to total.
+    if np.all(np.floor(vals) == vals) and int(vals.sum()) == int(n_total):
+        return {name: int(v) for name, v in zip(names, vals)}
+
+    if vals.sum() <= 0:
+        vals = np.ones_like(vals, dtype=float)
+    vals = vals / vals.sum()
+    return _largest_remainder_counts(n_total, {name: float(v) for name, v in zip(names, vals)})
+
+
+def _value_for_compartment(
+    spec: Any,
+    names: Sequence[str],
+    idx: int,
+    name: str,
+    default: Any,
+) -> Any:
+    if spec is None:
+        return default
+    if isinstance(spec, Mapping):
+        return spec.get(name, default)
+    if isinstance(spec, (list, tuple, np.ndarray)):
+        if idx >= len(spec):
+            return default
+        return spec[idx]
+    return spec
+
+
+def _matrix_from_compartment_spec(
+    names: Sequence[str],
+    matrix_spec: np.ndarray | Mapping[tuple[str, str], float] | None,
+    *,
+    default_value: float = 0.0,
+    zero_diagonal: bool = False,
+) -> np.ndarray:
+    names = [str(x) for x in names]
+    n = len(names)
+    out = np.full((n, n), float(default_value), dtype=float)
+
+    if matrix_spec is None:
+        if zero_diagonal:
+            np.fill_diagonal(out, 0.0)
+        return out
+
+    if isinstance(matrix_spec, Mapping):
+        idx = {name: i for i, name in enumerate(names)}
+        for (a, b), val in matrix_spec.items():
+            if a not in idx or b not in idx:
+                raise ValueError(f"Unknown compartment in matrix key ({a}, {b}).")
+            out[idx[a], idx[b]] = float(val)
+    else:
+        arr = np.asarray(matrix_spec, dtype=float)
+        if arr.shape != (n, n):
+            raise ValueError(f"Matrix must have shape ({n}, {n}), got {arr.shape}.")
+        out = arr.copy()
+
+    if zero_diagonal:
+        np.fill_diagonal(out, 0.0)
+    return out
+
+
+def _classical_mds(distance_matrix: np.ndarray, dim: int) -> np.ndarray:
+    n = distance_matrix.shape[0]
+    if n == 0:
+        return np.zeros((0, dim), dtype=float)
+    D = np.asarray(distance_matrix, dtype=float)
+    D = 0.5 * (D + D.T)
+    np.fill_diagonal(D, 0.0)
+    D2 = D ** 2
+    J = np.eye(n) - np.ones((n, n)) / n
+    B = -0.5 * J @ D2 @ J
+    eigvals, eigvecs = np.linalg.eigh(B)
+    order = np.argsort(eigvals)[::-1]
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+    keep = np.maximum(eigvals[:dim], 0.0)
+    X = eigvecs[:, :dim] * np.sqrt(keep)[None, :]
+    if X.shape[1] < dim:
+        pad = np.zeros((n, dim - X.shape[1]), dtype=float)
+        X = np.hstack([X, pad])
+    return X
+
+
+def generate_multi_compartment_spatial_ei_network(
+    n_total_neurons: int = 2000,
+    *,
+    compartment_names: Sequence[str] | None = None,
+    compartment_distribution: Mapping[str, float] | Sequence[float] | None = None,
+    inhibitory_fraction_by_compartment: Mapping[str, float] | Sequence[float] | float = 0.2,
+    excitatory_type_by_compartment: Mapping[str, str] | Sequence[str] | str = "ss4",
+    inhibitory_type_by_compartment: Mapping[str, str] | Sequence[str] | str = "b",
+    compartment_params: Mapping[str, Mapping[str, Any]] | None = None,
+    inter_compartment_matrix: np.ndarray | Mapping[tuple[str, str], float] | None = None,
+    compartment_distance_matrix: np.ndarray | Mapping[tuple[str, str], float] | None = None,
+    compartment_centers: Mapping[str, Sequence[float]] | None = None,
+    space_dim: int = 2,
+    inter_pa_gamma_pre: float = 1.5,
+    inter_pa_gamma_post: float = 1.5,
+    inter_lambda_distance: float | None = None,
+    inter_distance_scale: float = 1.0,
+    inter_weight_dist: str = "lognormal",
+    inter_mu_E: float = -2.0,
+    inter_sigma_E: float = 1.0,
+    inter_mu_I: float = -1.6,
+    inter_sigma_I: float = 0.6,
+    inter_weight_pair_scale: Mapping[str, float] | None = None,
+    inter_weight_clip: tuple[float, float] = (1e-4, 100.0),
+    seed: int | None = None,
+    pos_attr: str = "pos",
+    distance_attr: str = "distance",
+    weight_attr: str = "weight",
+    multiplicity_attr: str = "multiplicity",
+    compartment_attr: str = "compartment",
+) -> nx.DiGraph:
+    """
+    Build a directed multi-compartment network:
+      - Each compartment is generated by `generate_spatial_ei_network`.
+      - Compartments are then sparsely connected using a directed compartment->compartment matrix.
+      - Inter-compartment edges are sampled with preferential attachment (degree-biased).
+
+    `inter_compartment_matrix[i,j]` controls directed sparsity from compartment i to j.
+    Inter-compartment delay/distance comes from `compartment_distance_matrix` (or center distances).
+    """
+    if n_total_neurons <= 0:
+        raise ValueError("n_total_neurons must be > 0.")
+    if space_dim not in (2, 3):
+        raise ValueError("space_dim must be 2 or 3.")
+    if inter_distance_scale <= 0:
+        raise ValueError("inter_distance_scale must be > 0.")
+
+    rng = np.random.default_rng(seed)
+
+    if compartment_names is None:
+        if isinstance(compartment_distribution, Mapping) and len(compartment_distribution) > 0:
+            compartment_names = [str(k) for k in compartment_distribution.keys()]
+        else:
+            compartment_names = ["comp0", "comp1"]
+    compartment_names = [str(x) for x in compartment_names]
+    n_comp = len(compartment_names)
+    if n_comp == 0:
+        raise ValueError("compartment_names cannot be empty.")
+
+    counts = _counts_from_distribution(n_total_neurons, compartment_names, compartment_distribution)
+
+    inter_mat = _matrix_from_compartment_spec(
+        compartment_names,
+        inter_compartment_matrix,
+        default_value=0.0,
+        zero_diagonal=True,
+    )
+
+    if compartment_centers is not None:
+        centers = np.zeros((n_comp, space_dim), dtype=float)
+        for i, name in enumerate(compartment_names):
+            c = np.asarray(compartment_centers.get(name, np.zeros(space_dim)), dtype=float).reshape(-1)
+            if c.size < space_dim:
+                c = np.pad(c, (0, space_dim - c.size))
+            centers[i] = c[:space_dim]
+    else:
+        dist_mat = _matrix_from_compartment_spec(
+            compartment_names,
+            compartment_distance_matrix,
+            default_value=0.0,
+            zero_diagonal=True,
+        )
+        if np.any(dist_mat > 0):
+            centers = _classical_mds(dist_mat, dim=space_dim)
+        else:
+            centers = np.zeros((n_comp, space_dim), dtype=float)
+            for i in range(n_comp):
+                centers[i, 0] = float(i) * 2.0
+
+    if compartment_distance_matrix is None:
+        comp_dist = np.linalg.norm(centers[:, None, :] - centers[None, :, :], axis=2)
+        np.fill_diagonal(comp_dist, 0.0)
+    else:
+        comp_dist = _matrix_from_compartment_spec(
+            compartment_names,
+            compartment_distance_matrix,
+            default_value=0.0,
+            zero_diagonal=True,
+        )
+
+    inter_pair_scale = {"EE": 1.0, "EI": 1.0, "IE": 1.0, "II": 1.0}
+    if inter_weight_pair_scale is not None:
+        inter_pair_scale.update({k: float(v) for k, v in inter_weight_pair_scale.items()})
+
+    G = nx.DiGraph()
+    nodes_by_comp: dict[str, list[int]] = {name: [] for name in compartment_names}
+    comp_idx = {name: i for i, name in enumerate(compartment_names)}
+    offset = 0
+
+    # Build each compartment independently, then merge with index offset.
+    for ci, cname in enumerate(compartment_names):
+        n_comp_nodes = int(counts[cname])
+        if n_comp_nodes <= 0:
+            continue
+
+        inh_frac = float(_value_for_compartment(inhibitory_fraction_by_compartment, compartment_names, ci, cname, 0.2))
+        inh_frac = float(np.clip(inh_frac, 0.0, 1.0))
+        exc_type = str(_value_for_compartment(excitatory_type_by_compartment, compartment_names, ci, cname, "ss4"))
+        inh_type = str(_value_for_compartment(inhibitory_type_by_compartment, compartment_names, ci, cname, "b"))
+        type_fractions = {exc_type: float(1.0 - inh_frac), inh_type: float(inh_frac)}
+
+        params = {} if compartment_params is None else dict(compartment_params.get(cname, {}))
+        # Provide defaults from compartment-level requirements; compartment params can override.
+        params.setdefault("space_dim", space_dim)
+        params.setdefault("type_fractions", type_fractions)
+        params.setdefault("inhibitory_types", (inh_type,))
+        params.setdefault("seed", int(rng.integers(0, 2**31 - 1)))
+
+        Gc = generate_spatial_ei_network(
+            n_neurons=n_comp_nodes,
+            pos_attr=pos_attr,
+            distance_attr=distance_attr,
+            weight_attr=weight_attr,
+            multiplicity_attr=multiplicity_attr,
+            **params,
+        )
+
+        center = centers[ci]
+        mapping = {u: (offset + int(u)) for u in Gc.nodes()}
+
+        for u, attrs in Gc.nodes(data=True):
+            gu = mapping[u]
+            node_attrs = dict(attrs)
+            p_local = np.asarray(node_attrs.get(pos_attr, np.zeros(space_dim)), dtype=float).reshape(-1)
+            if p_local.size < space_dim:
+                p_local = np.pad(p_local, (0, space_dim - p_local.size))
+            p_global = p_local[:space_dim] + center
+            node_attrs[pos_attr] = tuple(p_global)
+            node_attrs["local_pos"] = tuple(p_local[:space_dim])
+            node_attrs[compartment_attr] = cname
+            node_attrs["compartment_index"] = ci
+            node_attrs["compartment_local_index"] = int(u)
+            G.add_node(gu, **node_attrs)
+            nodes_by_comp[cname].append(gu)
+
+        for u, v, attrs in Gc.edges(data=True):
+            gu, gv = mapping[u], mapping[v]
+            edge_attrs = dict(attrs)
+            edge_attrs["inter_compartment"] = False
+            G.add_edge(gu, gv, **edge_attrs)
+
+        offset += n_comp_nodes
+
+    # Sparse directed inter-compartment wiring with PA.
+    for i, pre_comp in enumerate(compartment_names):
+        pre_nodes = nodes_by_comp[pre_comp]
+        if len(pre_nodes) == 0:
+            continue
+        for j, post_comp in enumerate(compartment_names):
+            if i == j:
+                continue
+            post_nodes = nodes_by_comp[post_comp]
+            if len(post_nodes) == 0:
+                continue
+
+            p_comp = float(max(0.0, inter_mat[i, j]))
+            if p_comp <= 0:
+                continue
+
+            d_comp = float(max(0.0, comp_dist[i, j])) * float(inter_distance_scale)
+            dist_factor = 1.0
+            if inter_lambda_distance is not None and inter_lambda_distance > 0:
+                dist_factor = float(np.exp(-d_comp / float(inter_lambda_distance)))
+
+            n_expected = p_comp * len(pre_nodes) * len(post_nodes) * dist_factor
+            n_draws = int(rng.poisson(max(0.0, n_expected)))
+            if n_draws <= 0:
+                continue
+
+            for _ in range(n_draws):
+                pre_w = np.array([(G.out_degree(u) + 1.0) ** inter_pa_gamma_pre for u in pre_nodes], dtype=float)
+                post_w = np.array([(G.in_degree(v) + 1.0) ** inter_pa_gamma_post for v in post_nodes], dtype=float)
+                if pre_w.sum() <= 0:
+                    pre_w = np.ones_like(pre_w, dtype=float)
+                if post_w.sum() <= 0:
+                    post_w = np.ones_like(post_w, dtype=float)
+                pre_w /= pre_w.sum()
+                post_w /= post_w.sum()
+
+                u = int(rng.choice(pre_nodes, p=pre_w))
+                v = int(rng.choice(post_nodes, p=post_w))
+
+                pre_inh = bool(G.nodes[u].get("inhibitory", False))
+                post_inh = bool(G.nodes[v].get("inhibitory", False))
+                pair_key = _pair_key(pre_inh, post_inh)
+
+                if inter_weight_dist.lower() in ("normal", "gaussian", "gaussian_normal"):
+                    mu, sigma = (inter_mu_I, inter_sigma_I) if pre_inh else (inter_mu_E, inter_sigma_E)
+                    w_draw = float(rng.normal(mu, sigma))
+                else:
+                    mu, sigma = (inter_mu_I, inter_sigma_I) if pre_inh else (inter_mu_E, inter_sigma_E)
+                    w_draw = float(rng.lognormal(mu, sigma))
+                w_draw *= float(inter_pair_scale.get(pair_key, 1.0))
+                w_draw = float(np.clip(w_draw, inter_weight_clip[0], inter_weight_clip[1]))
+
+                if G.has_edge(u, v):
+                    G[u][v][multiplicity_attr] = int(G[u][v].get(multiplicity_attr, 1) + 1)
+                    G[u][v][weight_attr] = float(
+                        np.clip(G[u][v].get(weight_attr, 0.0) + w_draw, inter_weight_clip[0], inter_weight_clip[1])
+                    )
+                    if bool(G[u][v].get("inter_compartment", False)):
+                        G[u][v][distance_attr] = float(d_comp)
+                else:
+                    G.add_edge(
+                        u,
+                        v,
+                        **{
+                            distance_attr: float(d_comp),
+                            weight_attr: float(w_draw),
+                            multiplicity_attr: 1,
+                            "inter_compartment": True,
+                        },
+                    )
 
     return G
