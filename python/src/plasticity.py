@@ -32,7 +32,7 @@ class SmoothActivity:
 
 
 class STDP:
-    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=20.0, A_plus=0.1, A_minus=0.12, gaba_factor=0.0):
+    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=20.0, A_plus=0.1, A_minus=0.12, gaba_factor=0.0, plastic_source_mask=None):
         """
         Spike-Timing-Dependent Plasticity (STDP) class to represent the STDP mechanism.
         
@@ -41,6 +41,8 @@ class STDP:
         tau_minus: Time constant for depression (ms)
         A_plus: Maximum change in weight for potentiation
         A_minus: Maximum change in weight for depression
+        plastic_source_mask: Optional bool mask over source neurons (length n_neurons);
+            only True rows have plastic outgoing synapses.
         """
         self.connectome = connectome
 
@@ -49,6 +51,14 @@ class STDP:
         self.A_plus = A_plus
         self.A_minus = A_minus
         self.gaba_factor = gaba_factor
+        if plastic_source_mask is None:
+            self.plastic_source_mask = np.ones(connectome.M.shape[0], dtype=bool)
+        else:
+            self.plastic_source_mask = np.asarray(plastic_source_mask, dtype=bool)
+            if self.plastic_source_mask.ndim != 1 or self.plastic_source_mask.shape[0] != connectome.M.shape[0]:
+                raise ValueError(
+                    f"plastic_source_mask must be a 1D boolean array of length {connectome.M.shape[0]}."
+                )
 
         self.dt = dt
 
@@ -111,6 +121,7 @@ class STDP:
         post_effect = self.post_traces * self.A_minus * reward * self.dt
         dw = weight_stab * (pre_effect - post_effect)
         dw[self.connectome.neuron_population.inhibitory_mask] *= self.gaba_factor
+        dw[~self.plastic_source_mask] = 0.0
 
 
         # Update weights based on pre and post spike traces
@@ -128,6 +139,81 @@ class STDP:
         # Perform plasticity time step (like trace decay)
         self.decay_traces()
         # Update plasticity based on new spikes
+        self.spikes_in(pre_spikes, post_spikes)
+
+
+class STDPMasked:
+    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=20.0, A_plus=0.1, A_minus=0.12, gaba_factor=0.0, plastic_source_mask=None):
+        """
+        STDP variant optimized for partial plasticity over source neurons.
+
+        Only rows selected by `plastic_source_mask` are tracked and updated.
+        This reduces both memory and per-step compute when the mask is sparse.
+        """
+        self.connectome = connectome
+
+        self.tau_plus = tau_plus
+        self.tau_minus = tau_minus
+        self.A_plus = A_plus
+        self.A_minus = A_minus
+        self.gaba_factor = gaba_factor
+
+        n_neurons = connectome.M.shape[0]
+        if plastic_source_mask is None:
+            plastic_source_mask = np.ones(n_neurons, dtype=bool)
+        else:
+            plastic_source_mask = np.asarray(plastic_source_mask, dtype=bool)
+            if plastic_source_mask.ndim != 1 or plastic_source_mask.shape[0] != n_neurons:
+                raise ValueError(
+                    f"plastic_source_mask must be a 1D boolean array of length {n_neurons}."
+                )
+        self.plastic_source_mask = plastic_source_mask
+        self.src_idx = np.flatnonzero(self.plastic_source_mask)
+
+        # Pre-sliced connectivity for selected source rows.
+        self.M_sel = self.connectome.M[self.src_idx]
+        self.NC_invert_sel = self.connectome.NC_invert[self.src_idx]
+        self.inhibitory_sel = self.connectome.neuron_population.inhibitory_mask[self.src_idx]
+
+        self.dt = dt
+
+        self.decay_factor_plus = np.exp(-self.dt / self.tau_plus)
+        self.decay_factor_minus = np.exp(-self.dt / self.tau_minus)
+
+        self.pre_traces = np.zeros_like(self.M_sel, dtype=np.float32)
+        self.post_traces = np.zeros_like(self.M_sel, dtype=np.float32)
+
+    def spikes_in(self, pre_spikes, post_spikes):
+        if self.src_idx.size == 0:
+            return
+        pre_sel = pre_spikes[self.src_idx].astype(np.float32, copy=False)
+        self.pre_traces[self.NC_invert_sel] += pre_sel[self.NC_invert_sel]
+        self.post_traces[self.NC_invert_sel] += post_spikes[self.M_sel[self.NC_invert_sel]]
+
+    def decay_traces(self):
+        if self.src_idx.size == 0:
+            return
+        self.pre_traces *= self.decay_factor_plus
+        self.post_traces *= self.decay_factor_minus
+
+    def apply_weight_changes(self, reward=1):
+        if self.src_idx.size == 0:
+            return
+
+        max_weight = 2.1 / 100
+        weight_stab = 1.0
+
+        pre_effect = self.pre_traces * self.A_plus * reward * self.dt
+        post_effect = self.post_traces * self.A_minus * reward * self.dt
+        dw = weight_stab * (pre_effect - post_effect)
+        dw[self.inhibitory_sel] *= self.gaba_factor
+
+        self.connectome.W[self.src_idx] += dw
+        self.connectome.W[self.src_idx] = np.clip(self.connectome.W[self.src_idx], 0.0, max_weight)
+
+    def step(self, pre_spikes, post_spikes, reward=1):
+        self.apply_weight_changes(reward=reward)
+        self.decay_traces()
         self.spikes_in(pre_spikes, post_spikes)
 
 # A2_plus, A3_plus, A2_minus, A3_minus, tau_x, tau_y
