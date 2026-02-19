@@ -1026,6 +1026,9 @@ def generate_multi_compartment_spatial_ei_network(
     inter_pa_gamma_post: float = 1.5,
     inter_lambda_distance: float | None = None,
     inter_distance_scale: float = 1.0,
+    inter_distance_jitter: float = 0.1,
+    inter_distance_jitter_mode: str = "relative",
+    inter_distance_min: float = 1e-6,
     inter_weight_dist: str = "lognormal",
     inter_mu_E: float = -2.0,
     inter_sigma_E: float = 1.0,
@@ -1048,6 +1051,8 @@ def generate_multi_compartment_spatial_ei_network(
 
     `inter_compartment_matrix[i,j]` controls directed sparsity from compartment i to j.
     Inter-compartment delay/distance comes from `compartment_distance_matrix` (or center distances).
+    Use `inter_distance_jitter` to add edge-wise variation so inter-compartment
+    distances are not all identical.
     """
     if n_total_neurons <= 0:
         raise ValueError("n_total_neurons must be > 0.")
@@ -1055,6 +1060,10 @@ def generate_multi_compartment_spatial_ei_network(
         raise ValueError("space_dim must be 2 or 3.")
     if inter_distance_scale <= 0:
         raise ValueError("inter_distance_scale must be > 0.")
+    if inter_distance_jitter < 0:
+        raise ValueError("inter_distance_jitter must be >= 0.")
+    if inter_distance_jitter_mode not in ("relative", "absolute"):
+        raise ValueError("inter_distance_jitter_mode must be 'relative' or 'absolute'.")
 
     rng = np.random.default_rng(seed)
 
@@ -1224,19 +1233,28 @@ def generate_multi_compartment_spatial_ei_network(
                 w_draw *= float(inter_pair_scale.get(pair_key, 1.0))
                 w_draw = float(np.clip(w_draw, inter_weight_clip[0], inter_weight_clip[1]))
 
+                if inter_distance_jitter > 0:
+                    if inter_distance_jitter_mode == "relative":
+                        sigma_d = max(0.0, inter_distance_jitter * max(d_comp, float(inter_distance_min)))
+                    else:
+                        sigma_d = float(inter_distance_jitter)
+                    d_edge = float(max(inter_distance_min, rng.normal(loc=d_comp, scale=sigma_d)))
+                else:
+                    d_edge = float(max(inter_distance_min, d_comp))
+
                 if G.has_edge(u, v):
                     G[u][v][multiplicity_attr] = int(G[u][v].get(multiplicity_attr, 1) + 1)
                     G[u][v][weight_attr] = float(
                         np.clip(G[u][v].get(weight_attr, 0.0) + w_draw, inter_weight_clip[0], inter_weight_clip[1])
                     )
                     if bool(G[u][v].get("inter_compartment", False)):
-                        G[u][v][distance_attr] = float(d_comp)
+                        G[u][v][distance_attr] = float(d_edge)
                 else:
                     G.add_edge(
                         u,
                         v,
                         **{
-                            distance_attr: float(d_comp),
+                            distance_attr: float(d_edge),
                             weight_attr: float(w_draw),
                             multiplicity_attr: 1,
                             "inter_compartment": True,
