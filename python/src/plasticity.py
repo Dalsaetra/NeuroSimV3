@@ -2,6 +2,27 @@ import numpy as np
 
 from src.connectome import Connectome
 
+
+def _get_weight_multiplier(W, weight_multiplicity, max_weight):
+    if weight_multiplicity is None:
+        return 1.0
+    if weight_multiplicity == "weight_stab":
+        if max_weight is None:
+            raise ValueError("max_weight must be provided when weight_multiplicity='weight_stab'.")
+        weight_mult = W * (max_weight - W)
+        return np.clip(weight_mult, 0.001, max_weight)
+    if weight_multiplicity == "multiplicative_factor":
+        return W
+    raise ValueError(
+        "weight_multiplicity must be either 'weight_stab' or 'multiplicative_factor'."
+    )
+
+
+def _clip_weights_inplace(W, max_weight):
+    if max_weight is not None:
+        np.clip(W, 0.0, max_weight, out=W)
+
+
 class SmoothActivity:
     def __init__(self, n_neurons, tau, dt, A=0.0001):
         self.n = n_neurons
@@ -32,7 +53,8 @@ class SmoothActivity:
 
 
 class STDP:
-    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=20.0, A_plus=0.1, A_minus=0.12, gaba_factor=0.0, plastic_source_mask=None):
+    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=20.0, A_plus=0.1, A_minus=0.12, gaba_factor=0.0, plastic_source_mask=None,
+                 max_weight=300, weight_update_scale=1.0, weight_multiplicity="weight_stab"):
         """
         Spike-Timing-Dependent Plasticity (STDP) class to represent the STDP mechanism.
         
@@ -51,6 +73,9 @@ class STDP:
         self.A_plus = A_plus
         self.A_minus = A_minus
         self.gaba_factor = gaba_factor
+        self.max_weight = max_weight
+        self.weight_update_scale = weight_update_scale
+        self.weight_multiplicity = weight_multiplicity
         if plastic_source_mask is None:
             self.plastic_source_mask = np.ones(connectome.M.shape[0], dtype=bool)
         else:
@@ -109,17 +134,11 @@ class STDP:
         """
         # weight_changes = np.zeros_like(self.connectome.W, dtype=np.float32)
 
-        max_weight = 2.1 / 100
-
-        # Weight stabilizer
-        # weight_stab = self.connectome.W * (max_weight - self.connectome.W)
-        # weight_stab = np.clip(weight_stab, 0.001, max_weight)
-        weight_stab = 1.0
-
         # Calculate potentiation (pre spikes before post spikes)
         pre_effect = self.pre_traces * self.A_plus * reward * self.dt
         post_effect = self.post_traces * self.A_minus * reward * self.dt
-        dw = weight_stab * (pre_effect - post_effect)
+        weight_mult = _get_weight_multiplier(self.connectome.W, self.weight_multiplicity, self.max_weight)
+        dw = (pre_effect - post_effect) * self.weight_update_scale * weight_mult
         dw[self.connectome.neuron_population.inhibitory_mask] *= self.gaba_factor
         dw[~self.plastic_source_mask] = 0.0
 
@@ -131,7 +150,7 @@ class STDP:
         self.connectome.W += dw
 
         # Cap weights to [0, max_weight]
-        np.clip(self.connectome.W, 0.0, max_weight, out=self.connectome.W)
+        _clip_weights_inplace(self.connectome.W, self.max_weight)
 
     def step(self, pre_spikes, post_spikes, reward=1):
         # Update the synapse weights based on the traces from last step
@@ -143,7 +162,8 @@ class STDP:
 
 
 class STDPMasked:
-    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=20.0, A_plus=0.1, A_minus=0.12, gaba_factor=0.0, plastic_source_mask=None):
+    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=20.0, A_plus=0.1, A_minus=0.12, gaba_factor=0.0, plastic_source_mask=None,
+                 max_weight=300, weight_update_scale=1.0, weight_multiplicity="weight_stab"):
         """
         STDP variant optimized for partial plasticity over source neurons.
 
@@ -157,6 +177,9 @@ class STDPMasked:
         self.A_plus = A_plus
         self.A_minus = A_minus
         self.gaba_factor = gaba_factor
+        self.max_weight = max_weight
+        self.weight_update_scale = weight_update_scale
+        self.weight_multiplicity = weight_multiplicity
 
         n_neurons = connectome.M.shape[0]
         if plastic_source_mask is None:
@@ -200,16 +223,16 @@ class STDPMasked:
         if self.src_idx.size == 0:
             return
 
-        max_weight = 2.1 / 100
-        weight_stab = 1.0
-
         pre_effect = self.pre_traces * self.A_plus * reward * self.dt
         post_effect = self.post_traces * self.A_minus * reward * self.dt
-        dw = weight_stab * (pre_effect - post_effect)
+        W_sel = self.connectome.W[self.src_idx]
+        weight_mult = _get_weight_multiplier(W_sel, self.weight_multiplicity, self.max_weight)
+        dw = (pre_effect - post_effect) * self.weight_update_scale * weight_mult
         dw[self.inhibitory_sel] *= self.gaba_factor
 
         self.connectome.W[self.src_idx] += dw
-        self.connectome.W[self.src_idx] = np.clip(self.connectome.W[self.src_idx], 0.0, max_weight)
+        if self.max_weight is not None:
+            self.connectome.W[self.src_idx] = np.clip(self.connectome.W[self.src_idx], 0.0, self.max_weight)
 
     def step(self, pre_spikes, post_spikes, reward=1):
         self.apply_weight_changes(reward=reward)
@@ -233,7 +256,8 @@ t_stdp_params = {
     
 class T_STDP:
     def __init__(self, connectome: Connectome, dt, tau_plus=16.8, tau_minus=33.7, 
-                 A_plus=1.0, A_minus=2.0, mode="AtA_H_full", gaba_factor=-1.0):
+                 A_plus=1.0, A_minus=2.0, mode="AtA_H_full", gaba_factor=-1.0,
+                 max_weight=300, weight_update_scale=1.0, weight_multiplicity="weight_stab"):
         """
         Triplet Spike-Timing-Dependent Plasticity (T-STDP) class to represent the T-STDP mechanism.
         
@@ -251,6 +275,9 @@ class T_STDP:
         self.A_minus = A_minus
         self.A2_plus, self.A3_plus, self.A2_minus, self.A3_minus, self.tau_x, self.tau_y = t_stdp_params[mode]
         self.gaba_factor = gaba_factor
+        self.max_weight = max_weight
+        self.weight_update_scale = weight_update_scale
+        self.weight_multiplicity = weight_multiplicity
 
         self.dt = dt
 
@@ -337,24 +364,16 @@ class T_STDP:
         Returns:
         weight_changes: n_neurons x max_synapses array of weight changes
         """
-        weight_changes = np.zeros_like(self.connectome.W, dtype=np.float32)
-
-        # Weight stabilizer
-        weight_stab = self.connectome.W * (1 - self.connectome.W)
-        weight_stab = np.clip(weight_stab, 0.001, 1)
-
         # Calculate potentiation (pre spikes before post spikes)
         pre_effect = (self.A2_plus + self.A3_plus * self.post_y_traces) * self.pre_traces * reward * self.dt
         post_effect = (self.A2_minus + self.A3_minus * self.pre_x_traces) * self.post_traces * reward * self.dt
-        dw = (pre_effect - post_effect) * weight_stab
+        weight_mult = _get_weight_multiplier(self.connectome.W, self.weight_multiplicity, self.max_weight)
+        dw = (pre_effect - post_effect) * self.weight_update_scale * weight_mult
         dw[self.connectome.neuron_population.inhibitory_mask] *= self.gaba_factor
 
-
-        # Update weights based on pre and post spike traces
-        weight_changes += dw
-
         # Apply weight changes to the connectome's weight matrix
-        self.connectome.W += weight_changes
+        self.connectome.W += dw
+        _clip_weights_inplace(self.connectome.W, self.max_weight)
 
     def step(self, pre_spikes, post_spikes, reward=1):
         # Update the synapse weights based on the traces from last step
@@ -368,7 +387,8 @@ class T_STDP:
 
 
 class PredictiveCoding:
-    def __init__(self, connectome: Connectome, dt, A=0.00001, tau_activity=1000.0, gaba_factor=1.0, mirror_neurons=[]):
+    def __init__(self, connectome: Connectome, dt, A=0.00001, tau_activity=1000.0, gaba_factor=1.0, mirror_neurons=[],
+                 max_weight=None, weight_update_scale=1.0, weight_multiplicity="multiplicative_factor"):
         """
         Predictive Coding class to represent the predictive coding mechanism.
         mirror_neurons: Optional list of tuples (i,j) that note that the expected activity of neuron j is the activity of neuron i
@@ -378,6 +398,9 @@ class PredictiveCoding:
         self.tau_activity = tau_activity 
         self.A = A
         self.gaba_factor = gaba_factor
+        self.max_weight = max_weight
+        self.weight_update_scale = weight_update_scale
+        self.weight_multiplicity = weight_multiplicity
 
         self.dt = dt
 
@@ -414,17 +437,21 @@ class PredictiveCoding:
         error = self.activity_trace - mu
 
         # delta w_ij = A * error_j * activity_i
-        dw = reward * self.A * (error[self.connectome.M] * self.activity_trace[:, np.newaxis]) * self.connectome.W
+        dw = reward * self.A * (error[self.connectome.M] * self.activity_trace[:, np.newaxis])
+        weight_mult = _get_weight_multiplier(self.connectome.W, self.weight_multiplicity, self.max_weight)
+        dw = dw * self.weight_update_scale * weight_mult
 
         # Set weight changes to zero where no connection is marked
         dw[self.connectome.NC] = 0
 
  
         self.connectome.W += dw
+        _clip_weights_inplace(self.connectome.W, self.max_weight)
 
 
 class PredictiveCodingSaponati:
-    def __init__(self, connectome: Connectome, dt, A=0.001, tau_activity=10.0, gaba_factor=1.0):
+    def __init__(self, connectome: Connectome, dt, A=0.001, tau_activity=10.0, gaba_factor=1.0,
+                 max_weight=None, weight_update_scale=1.0, weight_multiplicity="multiplicative_factor"):
         """
         Predictive Coding class to represent the predictive coding mechanism.
 
@@ -434,6 +461,9 @@ class PredictiveCodingSaponati:
         self.tau_activity = tau_activity 
         self.A = A
         self.gaba_factor = gaba_factor
+        self.max_weight = max_weight
+        self.weight_update_scale = weight_update_scale
+        self.weight_multiplicity = weight_multiplicity
 
         # Get the resting potentials of the neurons
         self.Vrs = connectome.neuron_population.neuron_population[:, 5]  
@@ -465,7 +495,9 @@ class PredictiveCodingSaponati:
         # print((eps_t[: np.newaxis] * self.p_t).shape)
 
         # delta w_ij = A * error_j * activity_i
-        dw = reward * self.A * (error * relative_potentials[:, np.newaxis] + eps_t[:, np.newaxis] * self.p_t) * self.connectome.W
+        dw = reward * self.A * (error * relative_potentials[:, np.newaxis] + eps_t[:, np.newaxis] * self.p_t)
+        weight_mult = _get_weight_multiplier(self.connectome.W, self.weight_multiplicity, self.max_weight)
+        dw = dw * self.weight_update_scale * weight_mult
 
         dw[self.connectome.neuron_population.inhibitory_mask] *= self.gaba_factor
 
@@ -473,3 +505,4 @@ class PredictiveCodingSaponati:
         dw[self.connectome.NC] = 0
  
         self.connectome.W += dw
+        _clip_weights_inplace(self.connectome.W, self.max_weight)
