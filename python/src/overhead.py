@@ -344,6 +344,9 @@ class Simulation:
         if self.plasticity is not None and self.plasticity_step:
             if self.plasticity_step == "pre_post":
                 self.plasticity.step(pre_spikes, post_spikes, reward=reward)
+            elif self.plasticity_step == "sparse_pre_post":
+                self.plasticity.decay_traces()
+                self.plasticity.spikes_in(pre_spikes, post_spikes)
             elif self.plasticity_step == "pre_post_v":
                 self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=reward)
             elif self.plasticity_step == "post_isyn":
@@ -371,7 +374,13 @@ class Simulation:
             self.debug_logger.s_gaba_a.append(self.synapse_dynamics.g_GABA_A.copy() * self.synapse_dynamics.g_GABA_A_max)
             self.debug_logger.s_gaba_b.append(self.synapse_dynamics.g_GABA_B.copy() * self.synapse_dynamics.g_GABA_B_max)
 
-    def configure_output_readout(self, output_neuron_indices, output_dim, rate_window_ms=100.0):
+    def apply_reward(self, reward):
+        """
+        Apply a reward signal to the plasticity mechanism (if it uses it).
+        """
+        self.plasticity.apply_weight_changes(reward)
+
+    def configure_output_readout(self, output_neuron_indices, output_dim, enable_logger=False, rate_window_ms=100.0):
         """
         Configure an online output decoder from grouped output neurons.
 
@@ -426,6 +435,10 @@ class Simulation:
         }
         self.output_vector = np.zeros(int(output_dim), dtype=float)
 
+        self.output_logger_enabled = enable_logger
+        if self.output_logger_enabled:
+            self.output_logger = []
+
     def _update_output_readout(self, post_spikes):
         if self.output_readout is None:
             return
@@ -446,6 +459,9 @@ class Simulation:
             self.output_vector = self.output_readout["rolling_counts"] / elapsed_s
         else:
             self.output_vector = np.zeros_like(self.output_vector)
+
+        if self.output_logger_enabled:
+            self.output_logger.append(self.output_vector.copy())
 
     def read_output_vector(self):
         """

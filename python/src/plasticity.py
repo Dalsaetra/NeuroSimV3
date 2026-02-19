@@ -162,7 +162,7 @@ class STDP:
 
 
 class STDPMasked:
-    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=20.0, A_plus=0.1, A_minus=0.12, gaba_factor=0.0, plastic_source_mask=None,
+    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=40.0, A_plus=0.01, A_minus=0.012, gaba_factor=0.0, plastic_source_mask=None,
                  max_weight=300, weight_update_scale=1.0, weight_multiplicity="weight_stab"):
         """
         STDP variant optimized for partial plasticity over source neurons.
