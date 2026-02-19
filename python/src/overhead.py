@@ -378,7 +378,8 @@ class Simulation:
         Args:
             output_neuron_indices: 1D iterable of neuron indices defining the super group.
             output_dim: Size of the decoded output vector (y). The super group is split
-                        into `output_dim` equal contiguous groups.
+                        into `output_dim` contiguous groups. If the neuron count is not
+                        divisible by `output_dim`, the first group gets the remainder.
             rate_window_ms: Sliding window (ms) used for online firing-rate estimation.
                             Output units are mean subgroup firing rates in Hz/neuron.
         """
@@ -387,10 +388,10 @@ class Simulation:
             raise ValueError("output_dim must be a positive integer.")
         if indices.size == 0:
             raise ValueError("output_neuron_indices must be non-empty.")
-        if indices.size % int(output_dim) != 0:
+        if int(output_dim) > indices.size:
             raise ValueError(
-                "output_neuron_indices size must be divisible by output_dim "
-                f"(got {indices.size} and {output_dim})."
+                "output_dim cannot exceed number of output neurons "
+                f"(got {output_dim} and {indices.size})."
             )
         n_neurons = int(self.neuron_states.n_neurons)
         if np.any(indices < 0) or np.any(indices >= n_neurons):
@@ -398,8 +399,19 @@ class Simulation:
         if rate_window_ms <= 0:
             raise ValueError("rate_window_ms must be > 0.")
 
-        group_size = indices.size // int(output_dim)
-        groups = [indices[i * group_size:(i + 1) * group_size] for i in range(int(output_dim))]
+        n_groups = int(output_dim)
+        base = indices.size // n_groups
+        rem = indices.size % n_groups
+        group_sizes_list = [base] * n_groups
+        group_sizes_list[0] += rem
+
+        groups = []
+        start = 0
+        for size in group_sizes_list:
+            end = start + size
+            groups.append(indices[start:end])
+            start = end
+
         group_sizes = np.array([len(g) for g in groups], dtype=float)
         window_steps = max(1, int(round(rate_window_ms / self.dt)))
 
