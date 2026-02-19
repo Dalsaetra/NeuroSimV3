@@ -140,7 +140,7 @@ class NeuronState:
         spike = spike_rand < spike_prob
 
         if spike.any():
-            self.T = np.where(spike, self.T * self.threshold_mult, self.T)
+            self.T = np.where(spike, eff_threshold * self.threshold_mult - self.Vpeak, self.T)
             self.V = np.where(spike, self.c, self.V)
             self.u = np.where(spike, self.u + self.d, self.u)
 
