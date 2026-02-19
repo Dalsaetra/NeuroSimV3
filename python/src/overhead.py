@@ -7,7 +7,7 @@ from src.axonal_dynamics import AxonalDynamics
 from src.synapse_dynamics import SynapseDynamics, SynapseDynamics_Rise, SynapseDynamics_Uncapped
 from src.neuron_templates import neuron_type_IZ
 from src.input_integration import InputIntegration
-from src.plasticity import STDP, T_STDP, PredictiveCoding, PredictiveCodingSaponati
+from src.plasticity import STDP, STDPMasked, T_STDP, PredictiveCoding, PredictiveCodingSaponati
 from src.utilities import bin_counts, power_spectrum_fft, spectral_entropy
 
 class SimulationStats:
@@ -284,6 +284,8 @@ class Simulation:
                 key = plasticity.lower()
                 if key in ("stdp", "stpd"):
                     self.plasticity = STDP(connectome, self.dt, **plasticity_kwargs)
+                elif key in ("stdp_masked", "stdp_sparse", "masked_stdp", "sparse_stdp"):
+                    self.plasticity = STDPMasked(connectome, self.dt, **plasticity_kwargs)
                 elif key in ("t_stdp", "t-stdp", "tstdp"):
                     self.plasticity = T_STDP(connectome, self.dt, **plasticity_kwargs)
                 elif key in ("predictive", "predictivecoding"):
@@ -314,9 +316,11 @@ class Simulation:
 
         self.t_now = 0.0
         self.stats.ts.append(self.t_now)
+        self.output_readout = None
+        self.output_vector = None
 
 
-    def step(self, I_ext=None, spike_ext=None):
+    def step(self, I_ext=None, spike_ext=None, reward=1.0):
         """
         Step the simulation forward in time.
         """
@@ -339,11 +343,11 @@ class Simulation:
         # Update the synapse weights based on the traces from last step
         if self.plasticity is not None and self.plasticity_step:
             if self.plasticity_step == "pre_post":
-                self.plasticity.step(pre_spikes, post_spikes, reward=1.0)
+                self.plasticity.step(pre_spikes, post_spikes, reward=reward)
             elif self.plasticity_step == "pre_post_v":
-                self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=1)
+                self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=reward)
             elif self.plasticity_step == "post_isyn":
-                self.plasticity.step(post_spikes, I_syn, reward=1)
+                self.plasticity.step(post_spikes, I_syn, reward=reward)
             elif callable(self.plasticity_step):
                 self.plasticity_step(self.plasticity, pre_spikes, post_spikes, I_syn, self.neuron_states.V, self)
             else:
@@ -359,12 +363,85 @@ class Simulation:
         self.stats.us.append(self.neuron_states.u.copy())
         self.stats.spikes.append(self.neuron_states.spike.copy())
         self.stats.ts.append(self.t_now)
+        self._update_output_readout(post_spikes)
 
         if self.enable_debug_logger:
             self.debug_logger.s_ampa.append(self.synapse_dynamics.g_AMPA.copy() * self.synapse_dynamics.g_AMPA_max)
             self.debug_logger.s_nmda.append(self.synapse_dynamics.g_NMDA.copy() * self.synapse_dynamics.g_NMDA_max)
             self.debug_logger.s_gaba_a.append(self.synapse_dynamics.g_GABA_A.copy() * self.synapse_dynamics.g_GABA_A_max)
             self.debug_logger.s_gaba_b.append(self.synapse_dynamics.g_GABA_B.copy() * self.synapse_dynamics.g_GABA_B_max)
+
+    def configure_output_readout(self, output_neuron_indices, output_dim, rate_window_ms=100.0):
+        """
+        Configure an online output decoder from grouped output neurons.
+
+        Args:
+            output_neuron_indices: 1D iterable of neuron indices defining the super group.
+            output_dim: Size of the decoded output vector (y). The super group is split
+                        into `output_dim` equal contiguous groups.
+            rate_window_ms: Sliding window (ms) used for online firing-rate estimation.
+                            Output units are mean subgroup firing rates in Hz/neuron.
+        """
+        indices = np.asarray(output_neuron_indices, dtype=int).reshape(-1)
+        if output_dim <= 0:
+            raise ValueError("output_dim must be a positive integer.")
+        if indices.size == 0:
+            raise ValueError("output_neuron_indices must be non-empty.")
+        if indices.size % int(output_dim) != 0:
+            raise ValueError(
+                "output_neuron_indices size must be divisible by output_dim "
+                f"(got {indices.size} and {output_dim})."
+            )
+        n_neurons = int(self.neuron_states.n_neurons)
+        if np.any(indices < 0) or np.any(indices >= n_neurons):
+            raise ValueError("output_neuron_indices contains out-of-range neuron indices.")
+        if rate_window_ms <= 0:
+            raise ValueError("rate_window_ms must be > 0.")
+
+        group_size = indices.size // int(output_dim)
+        groups = [indices[i * group_size:(i + 1) * group_size] for i in range(int(output_dim))]
+        group_sizes = np.array([len(g) for g in groups], dtype=float)
+        window_steps = max(1, int(round(rate_window_ms / self.dt)))
+
+        self.output_readout = {
+            "groups": groups,
+            "group_sizes": group_sizes,
+            "window_steps": window_steps,
+            "buffer": np.zeros((window_steps, int(output_dim)), dtype=float),
+            "rolling_counts": np.zeros(int(output_dim), dtype=float),
+            "cursor": 0,
+            "filled": 0,
+        }
+        self.output_vector = np.zeros(int(output_dim), dtype=float)
+
+    def _update_output_readout(self, post_spikes):
+        if self.output_readout is None:
+            return
+
+        s = np.asarray(post_spikes).reshape(-1).astype(float)
+        group_counts = np.array([s[g].sum() for g in self.output_readout["groups"]], dtype=float)
+        group_counts = group_counts / self.output_readout["group_sizes"]
+
+        cursor = self.output_readout["cursor"]
+        old = self.output_readout["buffer"][cursor]
+        self.output_readout["rolling_counts"] += group_counts - old
+        self.output_readout["buffer"][cursor] = group_counts
+        self.output_readout["cursor"] = (cursor + 1) % self.output_readout["window_steps"]
+        self.output_readout["filled"] = min(self.output_readout["filled"] + 1, self.output_readout["window_steps"])
+
+        elapsed_s = self.output_readout["filled"] * self.dt / 1000.0
+        if elapsed_s > 0:
+            self.output_vector = self.output_readout["rolling_counts"] / elapsed_s
+        else:
+            self.output_vector = np.zeros_like(self.output_vector)
+
+    def read_output_vector(self):
+        """
+        Return current decoded output vector (Hz/neuron), one value per output group.
+        """
+        if self.output_vector is None:
+            raise RuntimeError("Output readout not configured. Call configure_output_readout(...) first.")
+        return self.output_vector.copy()
 
     def reset_stats(self):
         self.stats = SimulationStats()
