@@ -660,6 +660,7 @@ def generate_spatial_ei_network(
     weight_dist_by_ntype: Mapping[str, str] | None = None,
     lognormal_by_ntype: Mapping[str, tuple[float, float]] | None = None,
     weight_clip: tuple[float, float] = (1e-4, 100.0),
+    parallel_weight_mode: str = "sum_draws",
     normalize_mode: str | None = None,
     normalize_target: float | Mapping[int, float] | None = None,
     normalize_target_out_E: float | Mapping[int, float] | None = None,
@@ -681,6 +682,9 @@ def generate_spatial_ei_network(
       - "normal" (Gaussian)
     Per-type `(mu, sigma)` are supplied via `lognormal_by_ntype`
     (legacy name retained for compatibility).
+    `parallel_weight_mode` controls how multiplicity is applied:
+      - "multiply": draw one edge weight, then multiply by multiplicity (current behavior)
+      - "sum_draws": draw one weight per parallel connection, then sum those draws
     If `group_indices_by_ntype=True`, node IDs are relabeled so indices are
     grouped contiguously by `ntype` in `group_ntype_order` (or alphabetical).
     For `normalize_mode="out"`, you can set separate targets with
@@ -703,6 +707,8 @@ def generate_spatial_ei_network(
         raise ValueError("space_dim must be 2 or 3.")
     if distance_scale <= 0:
         raise ValueError("distance_scale must be > 0.")
+    if parallel_weight_mode not in ("multiply", "sum_draws"):
+        raise ValueError("parallel_weight_mode must be 'multiply' or 'sum_draws'.")
 
     rng = np.random.default_rng(seed)
 
@@ -878,8 +884,27 @@ def generate_spatial_ei_network(
         key = _pair_key(pre_inh, post_inh)
         mult = int(max(1, G[u][v].get(multiplicity_attr, 1)))
         scale = float(w_pair_scale.get(key, 1.0))
-        w = float(G[u][v].get(weight_attr, 1.0))
-        G[u][v][weight_attr] = float(np.clip(w * mult * scale, weight_clip[0], weight_clip[1]))
+        if parallel_weight_mode == "sum_draws" and mult > 1:
+            pre_ntype = str(G.nodes[u].get("ntype", ""))
+            dist_name = "lognormal"
+            if weight_dist_by_ntype is not None:
+                dist_name = str(weight_dist_by_ntype.get(pre_ntype, "lognormal")).lower()
+            if lognormal_by_ntype is not None and pre_ntype in lognormal_by_ntype:
+                mu, sigma = lognormal_by_ntype[pre_ntype]
+            else:
+                mu = mu_I if pre_inh else mu_E
+                sigma = sigma_I if pre_inh else sigma_E
+
+            if dist_name in ("normal", "gaussian", "gaussian_normal"):
+                draws = rng.normal(loc=float(mu), scale=float(sigma), size=mult)
+            else:
+                draws = rng.lognormal(mean=float(mu), sigma=float(sigma), size=mult)
+            draws = np.clip(draws, weight_clip[0], weight_clip[1])
+            w_eff = float(np.sum(draws) * scale)
+        else:
+            w = float(G[u][v].get(weight_attr, 1.0))
+            w_eff = float(w * mult * scale)
+        G[u][v][weight_attr] = float(np.clip(w_eff, weight_clip[0], weight_clip[1]))
 
     if normalize_mode is not None:
         if normalize_mode == "out" and (normalize_target_out_E is not None or normalize_target_out_I is not None):
