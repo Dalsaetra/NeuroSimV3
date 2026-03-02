@@ -160,9 +160,13 @@ class STDP:
         # Update plasticity based on new spikes
         self.spikes_in(pre_spikes, post_spikes)
 
+    def reset_traces(self):
+        self.pre_traces.fill(0)
+        self.post_traces.fill(0)
+
 
 class STDPMasked:
-    def __init__(self, connectome: Connectome, dt, tau_plus=20.0, tau_minus=40.0, A_plus=0.01, A_minus=0.012, gaba_factor=0.0, plastic_source_mask=None,
+    def __init__(self, connectome: Connectome, dt, tau_plus=250.0, tau_minus=500.0, A_plus=0.01, A_minus=0.012, gaba_factor=0.0, plastic_source_mask=None,
                  max_weight=300, weight_update_scale=1.0, weight_multiplicity="weight_stab"):
         """
         STDP variant optimized for partial plasticity over source neurons.
@@ -238,6 +242,130 @@ class STDPMasked:
         self.apply_weight_changes(reward=reward)
         self.decay_traces()
         self.spikes_in(pre_spikes, post_spikes)
+
+    def reset_traces(self):
+        self.pre_traces.fill(0)
+        self.post_traces.fill(0)
+
+
+class DA_BCM:
+    def __init__(
+        self,
+        connectome: Connectome,
+        dt,
+        tau_pre=250.0,
+        tau_post=500.0,
+        tau_theta=1000.0,
+        A=0.01,
+        weight_decay=0.0,
+        epsilon=None,
+        gaba_factor=0.0,
+        plastic_source_mask=None,
+        max_weight=300,
+        weight_update_scale=1.0,
+        weight_multiplicity="weight_stab",
+        theta_init=0.0,
+    ):
+        """
+        Dopamine-modulated BCM plasticity with sparse source masking.
+
+        Implementation details:
+        - Uses STDP-style exponential decay for eligibility traces.
+        - Uses an exponential moving average for BCM threshold theta.
+        - Uses reward as the global dopamine modulation signal.
+        """
+        self.connectome = connectome
+
+        self.tau_pre = tau_pre
+        self.tau_post = tau_post
+        self.tau_theta = tau_theta
+        self.A = A
+        if epsilon is not None:
+            weight_decay = epsilon
+        self.weight_decay = weight_decay
+        self.gaba_factor = gaba_factor
+        self.max_weight = max_weight
+        self.weight_update_scale = weight_update_scale
+        self.weight_multiplicity = weight_multiplicity
+        self.theta_init = theta_init
+
+        n_neurons = connectome.M.shape[0]
+        if plastic_source_mask is None:
+            plastic_source_mask = np.ones(n_neurons, dtype=bool)
+        else:
+            plastic_source_mask = np.asarray(plastic_source_mask, dtype=bool)
+            if plastic_source_mask.ndim != 1 or plastic_source_mask.shape[0] != n_neurons:
+                raise ValueError(
+                    f"plastic_source_mask must be a 1D boolean array of length {n_neurons}."
+                )
+        self.plastic_source_mask = plastic_source_mask
+        self.src_idx = np.flatnonzero(self.plastic_source_mask)
+
+        # Pre-sliced connectivity for selected source rows.
+        self.M_sel = self.connectome.M[self.src_idx]
+        self.NC_invert_sel = self.connectome.NC_invert[self.src_idx]
+        self.inhibitory_sel = self.connectome.neuron_population.inhibitory_mask[self.src_idx]
+
+        self.dt = dt
+        self.decay_factor_pre = np.exp(-self.dt / self.tau_pre)
+        self.decay_factor_post = np.exp(-self.dt / self.tau_post)
+        self.theta_alpha = 1.0 - np.exp(-self.dt / self.tau_theta)
+
+        self.pre_traces = np.zeros_like(self.M_sel, dtype=np.float32)
+        self.post_traces = np.zeros_like(self.M_sel, dtype=np.float32)
+
+        # Per-neuron post activity trace is used to define a neuron-level BCM threshold.
+        self.post_activity_trace = np.zeros(n_neurons, dtype=np.float32)
+        self.theta = np.full(n_neurons, theta_init, dtype=np.float32)
+
+    def spikes_in(self, pre_spikes, post_spikes):
+        post_flat = np.asarray(post_spikes, dtype=np.float32).reshape(-1)
+        if self.src_idx.size > 0:
+            pre_sel = pre_spikes[self.src_idx].astype(np.float32, copy=False)
+            self.pre_traces[self.NC_invert_sel] += pre_sel[self.NC_invert_sel]
+            self.post_traces[self.NC_invert_sel] += post_flat[self.M_sel[self.NC_invert_sel]]
+        self.post_activity_trace += post_flat
+
+    def decay_traces(self):
+        if self.src_idx.size > 0:
+            self.pre_traces *= self.decay_factor_pre
+            self.post_traces *= self.decay_factor_post
+        self.post_activity_trace *= self.decay_factor_post
+
+    def update_theta(self):
+        self.theta += self.theta_alpha * (self.post_activity_trace - self.theta)
+
+    def apply_weight_changes(self, reward=1):
+        if self.src_idx.size == 0:
+            return
+
+        W_sel = self.connectome.W[self.src_idx]
+        theta_syn = self.theta[self.M_sel]
+        post_drive = self.post_traces * (self.post_traces - theta_syn)
+        eligibility = self.pre_traces * post_drive
+        if self.weight_decay != 0.0:
+            eligibility -= self.weight_decay * W_sel
+
+        weight_mult = _get_weight_multiplier(W_sel, self.weight_multiplicity, self.max_weight)
+        dw = reward * self.A * eligibility * self.dt
+        dw = dw * self.weight_update_scale * weight_mult
+        dw[self.inhibitory_sel] *= self.gaba_factor
+
+        self.connectome.W[self.src_idx] += dw
+        if self.max_weight is not None:
+            self.connectome.W[self.src_idx] = np.clip(self.connectome.W[self.src_idx], 0.0, self.max_weight)
+
+    def step(self, pre_spikes, post_spikes, reward=1):
+        self.apply_weight_changes(reward=reward)
+        self.decay_traces()
+        self.spikes_in(pre_spikes, post_spikes)
+        self.update_theta()
+
+    def reset_traces(self):
+        self.pre_traces.fill(0)
+        self.post_traces.fill(0)
+        self.post_activity_trace.fill(0)
+        self.theta.fill(self.theta_init)
 
 # A2_plus, A3_plus, A2_minus, A3_minus, tau_x, tau_y
 t_stdp_params = {
@@ -384,6 +512,12 @@ class T_STDP:
         # Update plasticity based on new spikes
         self.spikes_in_main(pre_spikes, post_spikes)
         self.spikes_in_sub(pre_spikes, post_spikes)
+
+    def reset_traces(self):
+        self.pre_traces.fill(0)
+        self.post_traces.fill(0)
+        self.pre_x_traces.fill(0)
+        self.post_y_traces.fill(0)
 
 
 class PredictiveCoding:

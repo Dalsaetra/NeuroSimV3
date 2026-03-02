@@ -7,7 +7,7 @@ from src.axonal_dynamics import AxonalDynamics
 from src.synapse_dynamics import SynapseDynamics, SynapseDynamics_Rise, SynapseDynamics_Uncapped
 from src.neuron_templates import neuron_type_IZ
 from src.input_integration import InputIntegration
-from src.plasticity import STDP, STDPMasked, T_STDP, PredictiveCoding, PredictiveCodingSaponati
+from src.plasticity import STDP, STDPMasked, DA_BCM, T_STDP, PredictiveCoding, PredictiveCodingSaponati
 from src.utilities import bin_counts, power_spectrum_fft, spectral_entropy
 
 class SimulationStats:
@@ -258,7 +258,7 @@ class DebugLogger:
 class Simulation:
     def __init__(self, connectome: Connectome, dt, stepper_type="adapt", state0=None,
                  enable_plasticity=True, plasticity="stdp", plasticity_kwargs=None, synapse_type="standard", synapse_kwargs=None,
-                 plasticity_step="pre_post", enable_debug_logger=False):
+                 plasticity_step="pre_post", enable_state_logger=True, enable_debug_logger=False):
         """
         Simulation class to represent the simulation of a neuron population.
         """
@@ -286,6 +286,8 @@ class Simulation:
                     self.plasticity = STDP(connectome, self.dt, **plasticity_kwargs)
                 elif key in ("stdp_masked", "stdp_sparse", "masked_stdp", "sparse_stdp"):
                     self.plasticity = STDPMasked(connectome, self.dt, **plasticity_kwargs)
+                elif key in ("da_bcm", "da-bcm", "dabcm", "bcm_da", "bcm-da"):
+                    self.plasticity = DA_BCM(connectome, self.dt, **plasticity_kwargs)
                 elif key in ("t_stdp", "t-stdp", "tstdp"):
                     self.plasticity = T_STDP(connectome, self.dt, **plasticity_kwargs)
                 elif key in ("predictive", "predictivecoding"):
@@ -299,11 +301,13 @@ class Simulation:
             else:
                 raise ValueError("plasticity must be a string key or a callable factory.")
 
+        self.enable_state_logger = enable_state_logger
         self.stats = SimulationStats()
         self.stats.inhibitory_mask = connectome.neuron_population.inhibitory_mask.copy()
-        self.stats.Vs.append(self.neuron_states.V.copy())
-        self.stats.us.append(self.neuron_states.u.copy())
-        self.stats.spikes.append(self.neuron_states.spike.copy())
+        if self.enable_state_logger:
+            self.stats.Vs.append(self.neuron_states.V.copy())
+            self.stats.us.append(self.neuron_states.u.copy())
+            self.stats.spikes.append(self.neuron_states.spike.copy())
 
 
         self.enable_debug_logger = enable_debug_logger
@@ -315,7 +319,8 @@ class Simulation:
             self.debug_logger.s_gaba_b.append(self.synapse_dynamics.g_GABA_B.copy())
 
         self.t_now = 0.0
-        self.stats.ts.append(self.t_now)
+        if self.enable_state_logger:
+            self.stats.ts.append(self.t_now)
         self.output_readout = None
         self.output_vector = None
 
@@ -362,10 +367,11 @@ class Simulation:
         # Update the current time
         self.t_now += self.dt
         # Store the current state
-        self.stats.Vs.append(self.neuron_states.V.copy())
-        self.stats.us.append(self.neuron_states.u.copy())
-        self.stats.spikes.append(self.neuron_states.spike.copy())
-        self.stats.ts.append(self.t_now)
+        if self.enable_state_logger:
+            self.stats.Vs.append(self.neuron_states.V.copy())
+            self.stats.us.append(self.neuron_states.u.copy())
+            self.stats.spikes.append(self.neuron_states.spike.copy())
+            self.stats.ts.append(self.t_now)
         self._update_output_readout(post_spikes)
 
         if self.enable_debug_logger:
@@ -474,10 +480,11 @@ class Simulation:
     def reset_stats(self):
         self.stats = SimulationStats()
         self.stats.inhibitory_mask = self.connectome.neuron_population.inhibitory_mask.copy()
-        self.stats.Vs.append(self.neuron_states.V.copy())
-        self.stats.us.append(self.neuron_states.u.copy())
-        self.stats.spikes.append(self.neuron_states.spike.copy())
-        self.stats.ts.append(self.t_now)
+        if self.enable_state_logger:
+            self.stats.Vs.append(self.neuron_states.V.copy())
+            self.stats.us.append(self.neuron_states.u.copy())
+            self.stats.spikes.append(self.neuron_states.spike.copy())
+            self.stats.ts.append(self.t_now)
 
     def plot_voltage_per_type(self, dt_ms=None, t_start_ms=None, t_stop_ms=None, figsize=(10, 6)):
         # Example voltage plot: plt.plot(np.array(sim.stats.Vs)[:, pop.get_neurons_from_type("b")])
