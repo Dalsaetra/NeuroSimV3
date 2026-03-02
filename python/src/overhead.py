@@ -350,8 +350,11 @@ class Simulation:
             if self.plasticity_step == "pre_post":
                 self.plasticity.step(pre_spikes, post_spikes, reward=reward)
             elif self.plasticity_step == "sparse_pre_post":
-                self.plasticity.decay_traces()
-                self.plasticity.spikes_in(pre_spikes, post_spikes)
+                if hasattr(self.plasticity, "step_no_weight_changes"):
+                    self.plasticity.step_no_weight_changes(pre_spikes, post_spikes, reward=reward)
+                else:
+                    self.plasticity.decay_traces()
+                    self.plasticity.spikes_in(pre_spikes, post_spikes)
             elif self.plasticity_step == "pre_post_v":
                 self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=reward)
             elif self.plasticity_step == "post_isyn":

@@ -160,6 +160,10 @@ class STDP:
         # Update plasticity based on new spikes
         self.spikes_in(pre_spikes, post_spikes)
 
+    def step_no_weight_changes(self, pre_spikes, post_spikes, reward=1):
+        self.decay_traces()
+        self.spikes_in(pre_spikes, post_spikes)
+
     def reset_traces(self):
         self.pre_traces.fill(0)
         self.post_traces.fill(0)
@@ -240,6 +244,10 @@ class STDPMasked:
 
     def step(self, pre_spikes, post_spikes, reward=1):
         self.apply_weight_changes(reward=reward)
+        self.decay_traces()
+        self.spikes_in(pre_spikes, post_spikes)
+
+    def step_no_weight_changes(self, pre_spikes, post_spikes, reward=1):
         self.decay_traces()
         self.spikes_in(pre_spikes, post_spikes)
 
@@ -357,6 +365,11 @@ class DA_BCM:
 
     def step(self, pre_spikes, post_spikes, reward=1):
         self.apply_weight_changes(reward=reward)
+        self.decay_traces()
+        self.spikes_in(pre_spikes, post_spikes)
+        self.update_theta()
+
+    def step_no_weight_changes(self, pre_spikes, post_spikes, reward=1):
         self.decay_traces()
         self.spikes_in(pre_spikes, post_spikes)
         self.update_theta()
@@ -513,6 +526,12 @@ class T_STDP:
         self.spikes_in_main(pre_spikes, post_spikes)
         self.spikes_in_sub(pre_spikes, post_spikes)
 
+    def step_no_weight_changes(self, pre_spikes, post_spikes, reward=1):
+        self.decay_traces_main()
+        self.decay_traces_sub()
+        self.spikes_in_main(pre_spikes, post_spikes)
+        self.spikes_in_sub(pre_spikes, post_spikes)
+
     def reset_traces(self):
         self.pre_traces.fill(0)
         self.post_traces.fill(0)
@@ -582,6 +601,11 @@ class PredictiveCoding:
         self.connectome.W += dw
         _clip_weights_inplace(self.connectome.W, self.max_weight)
 
+    def step_no_weight_changes(self, pre_spikes, post_spikes, reward=1):
+        self.activity_trace = self.smoothact.step(post_spikes)
+        for i, j in self.mirror_neurons:
+            self.activity_trace[j] = self.activity_trace[i]
+
 
 class PredictiveCodingSaponati:
     def __init__(self, connectome: Connectome, dt, A=0.001, tau_activity=10.0, gaba_factor=1.0,
@@ -640,3 +664,7 @@ class PredictiveCodingSaponati:
  
         self.connectome.W += dw
         _clip_weights_inplace(self.connectome.W, self.max_weight)
+
+    def step_no_weight_changes(self, pre_spikes, post_spikes, Vs=None, reward=1):
+        self.p_t *= self.decay_pre
+        self.p_t += pre_spikes
