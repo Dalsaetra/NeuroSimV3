@@ -2,6 +2,7 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 from networkx.algorithms import smallworld
+from typing import Mapping
 
 from src.neuron_population import NeuronPopulation
 
@@ -36,6 +37,114 @@ class Connectome:
         self.distances = np.ones((self.neuron_population.n_neurons, max_synapses), dtype=float)
 
         self.NC_invert = ~self.NC  # Inverted NC matrix for easier indexing
+
+    def normalize_weights_total(self, mode: str, target: float | Mapping[int, float]):
+        """
+        Renormalize total incoming or outgoing synaptic weights per neuron.
+
+        This mirrors `network_generators._normalize_weights_total`, but applies
+        directly to the connectome matrices (`M`, `W`, `NC`).
+
+        Parameters:
+        mode: 'in' or 'out'
+            'in'  -> normalize total incoming weight of each neuron
+            'out' -> normalize total outgoing weight of each neuron
+        target: float or mapping[int, float]
+            Desired total weight for each neuron. If a scalar is provided,
+            the same target is used for all neurons.
+        """
+        if mode not in ("in", "out"):
+            raise ValueError("normalize_mode must be None, 'in', or 'out'.")
+
+        n = self.neuron_population.n_neurons
+        valid = ~self.NC
+
+        def _target_for(node: int) -> float:
+            if isinstance(target, Mapping):
+                return float(target.get(node, 0.0))
+            return float(target)
+
+        for node in range(n):
+            tgt = _target_for(node)
+            if tgt <= 0:
+                continue
+
+            if mode == "out":
+                edge_mask = valid[node, :]
+                if not np.any(edge_mask):
+                    continue
+                w = np.maximum(0.0, self.W[node, edge_mask])
+                s = float(np.sum(w))
+                if s <= 0:
+                    continue
+                scale = tgt / s
+                self.W[node, edge_mask] = np.maximum(0.0, self.W[node, edge_mask] * scale)
+            else:
+                edge_mask = valid & (self.M == node)
+                if not np.any(edge_mask):
+                    continue
+                w = np.maximum(0.0, self.W[edge_mask])
+                s = float(np.sum(w))
+                if s <= 0:
+                    continue
+                scale = tgt / s
+                self.W[edge_mask] = np.maximum(0.0, self.W[edge_mask] * scale)
+
+        if hasattr(self, "G") and isinstance(self.G, nx.DiGraph):
+            for i in range(n):
+                for j in np.where(valid[i, :])[0]:
+                    k = int(self.M[i, j])
+                    if self.G.has_edge(i, k):
+                        self.G[i][k]["weight"] = float(self.W[i, j])
+
+    def normalize_out_weights_by_preclass(
+        self,
+        *,
+        target_E: float | Mapping[int, float] | None,
+        target_I: float | Mapping[int, float] | None,
+    ):
+        """
+        Renormalize outgoing synaptic weights with separate targets for
+        excitatory and inhibitory presynaptic neurons.
+
+        This mirrors `network_generators._normalize_out_weights_by_preclass`,
+        but applies directly to the connectome matrices (`M`, `W`, `NC`).
+        """
+        n = self.neuron_population.n_neurons
+        valid = ~self.NC
+        inhib_mask = np.asarray(self.neuron_population.inhibitory_mask, dtype=bool)
+
+        def _target_for(node: int, target_val) -> float | None:
+            if target_val is None:
+                return None
+            if isinstance(target_val, Mapping):
+                return float(target_val.get(node, 0.0))
+            return float(target_val)
+
+        for node in range(n):
+            is_inh = bool(inhib_mask[node])
+            tgt = _target_for(node, target_I if is_inh else target_E)
+            if tgt is None or tgt <= 0:
+                continue
+
+            edge_mask = valid[node, :]
+            if not np.any(edge_mask):
+                continue
+
+            w = np.maximum(0.0, self.W[node, edge_mask])
+            s = float(np.sum(w))
+            if s <= 0:
+                continue
+
+            scale = tgt / s
+            self.W[node, edge_mask] = np.maximum(0.0, self.W[node, edge_mask] * scale)
+
+        if hasattr(self, "G") and isinstance(self.G, nx.DiGraph):
+            for i in range(n):
+                for j in np.where(valid[i, :])[0]:
+                    k = int(self.M[i, j])
+                    if self.G.has_edge(i, k):
+                        self.G[i][k]["weight"] = float(self.W[i, j])
 
 
     def build_from_probability(self, connectivity_probability, synapse_strengths=None):
