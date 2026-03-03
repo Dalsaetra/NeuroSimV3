@@ -526,6 +526,45 @@ class Simulation:
         plt.tight_layout()
         plt.show()
 
+    def plot_voltage_per_neuron(self, dt_ms=None, t_start_ms=None, t_stop_ms=None, figsize=(10, 2), sharex=True):
+        """
+        Plot one voltage trace per neuron, each in its own subplot.
+        """
+        Vs = np.array(self.stats.Vs)  # shape (T, N)
+        if Vs.size == 0:
+            return
+
+        T, N = Vs.shape
+        if len(self.stats.ts) == T:
+            t = np.array(self.stats.ts, dtype=float)
+        else:
+            t = self.stats.times_ms(dt_ms=dt_ms)
+
+        mask = np.ones_like(t, dtype=bool)
+        if t_start_ms is not None:
+            mask &= t >= t_start_ms
+        if t_stop_ms is not None:
+            mask &= t <= t_stop_ms
+
+        t_plot = t[mask]
+        Vs = Vs[mask, :]
+        if t_plot.size == 0:
+            return
+
+        fig_h = max(figsize[1] * N, 2.5)
+        fig, axes = plt.subplots(N, 1, figsize=(figsize[0], fig_h), sharex=sharex)
+        if N == 1:
+            axes = [axes]
+
+        for i, ax in enumerate(axes):
+            ax.plot(t_plot, Vs[:, i], linewidth=1.0)
+            ax.set_ylabel(f"n{i}\nV (mV)")
+            ax.grid(alpha=0.2, linewidth=0.5)
+
+        axes[-1].set_xlabel("Time (ms)")
+        fig.tight_layout()
+        plt.show()
+
     def plot_spike_raster(self, dt_ms=None, t_start_ms=None, t_stop_ms=None, figsize=(10, 6), s=8, alpha=0.7, legend=True, title=None, save_path=None):
         """
         Raster plot of spikes across all neurons.
