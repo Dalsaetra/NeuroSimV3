@@ -1,3 +1,5 @@
+import inspect
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -7,7 +9,7 @@ from src.axonal_dynamics import AxonalDynamics
 from src.synapse_dynamics import SynapseDynamics, SynapseDynamics_Rise, SynapseDynamics_Uncapped
 from src.neuron_templates import neuron_type_IZ
 from src.input_integration import InputIntegration
-from src.plasticity import STDP, STDPMasked, DA_BCM, T_STDP, PredictiveCoding, PredictiveCodingSaponati
+from src.plasticity import STDP, STDPMasked, DA_BCM, ClopathMasked, T_STDP, PredictiveCoding, PredictiveCodingSaponati
 from src.utilities import bin_counts, power_spectrum_fft, spectral_entropy
 
 class SimulationStats:
@@ -256,9 +258,94 @@ class DebugLogger:
         self.s_gaba_b = []
 
 class Simulation:
+    _PLASTICITY_REGISTRY = {
+        "stdp": (STDP, "pre_post"),
+        "stpd": (STDP, "pre_post"),
+        "stdp_masked": (STDPMasked, "pre_post"),
+        "stdp_sparse": (STDPMasked, "pre_post"),
+        "masked_stdp": (STDPMasked, "pre_post"),
+        "sparse_stdp": (STDPMasked, "pre_post"),
+        "da_bcm": (DA_BCM, "pre_post"),
+        "da-bcm": (DA_BCM, "pre_post"),
+        "dabcm": (DA_BCM, "pre_post"),
+        "bcm_da": (DA_BCM, "pre_post"),
+        "bcm-da": (DA_BCM, "pre_post"),
+        "clopath": (ClopathMasked, "pre_post_v"),
+        "clopath_masked": (ClopathMasked, "pre_post_v"),
+        "clopath_sparse": (ClopathMasked, "pre_post_v"),
+        "masked_clopath": (ClopathMasked, "pre_post_v"),
+        "sparse_clopath": (ClopathMasked, "pre_post_v"),
+        "t_stdp": (T_STDP, "pre_post"),
+        "t-stdp": (T_STDP, "pre_post"),
+        "tstdp": (T_STDP, "pre_post"),
+        "predictive": (PredictiveCoding, "pre_post"),
+        "predictivecoding": (PredictiveCoding, "pre_post"),
+        "saponati": (PredictiveCodingSaponati, "pre_post_v"),
+        "predictivecodingsaponati": (PredictiveCodingSaponati, "pre_post_v"),
+    }
+
+    @staticmethod
+    def _normalize_plasticity_reward_type(plasticity_reward_type):
+        key = str(plasticity_reward_type).strip().lower()
+        if key in ("online", "dense", "step"):
+            return "online"
+        if key in ("sparse", "episodic", "delayed"):
+            return "sparse"
+        raise ValueError(
+            f"Unknown plasticity_reward_type '{plasticity_reward_type}'. "
+            "Expected 'online' or 'sparse'."
+        )
+
+    @classmethod
+    def _resolve_plasticity_factory(cls, plasticity_key):
+        if plasticity_key not in cls._PLASTICITY_REGISTRY:
+            raise ValueError(f"Unknown plasticity '{plasticity_key}'.")
+        return cls._PLASTICITY_REGISTRY[plasticity_key]
+
+    @staticmethod
+    def _infer_base_plasticity_step(plasticity_obj):
+        step_fn = getattr(plasticity_obj, "step", None)
+        if not callable(step_fn):
+            raise ValueError("Plasticity object must implement a callable step(...) method.")
+
+        sig = inspect.signature(step_fn)
+        param_names = [
+            p.name
+            for p in sig.parameters.values()
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        if param_names and param_names[0] == "self":
+            param_names = param_names[1:]
+        names = set(param_names)
+
+        if {"pre_spikes", "post_spikes"}.issubset(names):
+            if "Vs" in names or "V" in names:
+                return "pre_post_v"
+            return "pre_post"
+        if {"post_spikes", "I_syn"}.issubset(names):
+            return "post_isyn"
+        raise ValueError(
+            "Could not infer plasticity step mode from step(...) signature. "
+            "Expected (pre_spikes, post_spikes[, Vs], reward=...) or (post_spikes, I_syn, reward=...)."
+        )
+
+    @staticmethod
+    def _resolve_runtime_plasticity_step(base_step, plasticity_reward_type):
+        if plasticity_reward_type == "online":
+            return base_step
+        if plasticity_reward_type != "sparse":
+            raise ValueError(f"Unknown plasticity_reward_type '{plasticity_reward_type}'.")
+        if base_step == "pre_post":
+            return "sparse_pre_post"
+        if base_step == "pre_post_v":
+            return "sparse_pre_post_v"
+        raise ValueError(
+            f"Sparse reward mode is not supported for plasticity step '{base_step}'."
+        )
+
     def __init__(self, connectome: Connectome, dt, stepper_type="adapt", state0=None,
-                 enable_plasticity=True, plasticity="stdp", plasticity_kwargs=None, synapse_type="standard", synapse_kwargs=None,
-                 plasticity_step="pre_post", enable_state_logger=True, enable_debug_logger=False):
+                 enable_plasticity=True, plasticity="stdp", plasticity_reward_type="online", plasticity_kwargs=None,
+                 synapse_type="standard", synapse_kwargs=None, enable_state_logger=True, enable_debug_logger=False):
         """
         Simulation class to represent the simulation of a neuron population.
         """
@@ -277,29 +364,23 @@ class Simulation:
         self.neuron_states = NeuronState(connectome.neuron_population.neuron_population.T, stepper_type=stepper_type, state0=state0)
         self.integrator = InputIntegration(self.synapse_dynamics)
         plasticity_kwargs = plasticity_kwargs or {}
+        self.plasticity_reward_type = self._normalize_plasticity_reward_type(plasticity_reward_type)
         self.plasticity = None
-        self.plasticity_step = plasticity_step
+        self.plasticity_step = None
         if enable_plasticity:
             if isinstance(plasticity, str):
                 key = plasticity.lower()
-                if key in ("stdp", "stpd"):
-                    self.plasticity = STDP(connectome, self.dt, **plasticity_kwargs)
-                elif key in ("stdp_masked", "stdp_sparse", "masked_stdp", "sparse_stdp"):
-                    self.plasticity = STDPMasked(connectome, self.dt, **plasticity_kwargs)
-                elif key in ("da_bcm", "da-bcm", "dabcm", "bcm_da", "bcm-da"):
-                    self.plasticity = DA_BCM(connectome, self.dt, **plasticity_kwargs)
-                elif key in ("t_stdp", "t-stdp", "tstdp"):
-                    self.plasticity = T_STDP(connectome, self.dt, **plasticity_kwargs)
-                elif key in ("predictive", "predictivecoding"):
-                    self.plasticity = PredictiveCoding(connectome, self.dt, **plasticity_kwargs)
-                elif key in ("saponati", "predictivecodingsaponati"):
-                    self.plasticity = PredictiveCodingSaponati(connectome, self.dt, **plasticity_kwargs)
-                else:
-                    raise ValueError(f"Unknown plasticity '{plasticity}'.")
+                factory, base_step = self._resolve_plasticity_factory(key)
+                self.plasticity = factory(connectome, self.dt, **plasticity_kwargs)
             elif callable(plasticity):
                 self.plasticity = plasticity(connectome, self.dt, **plasticity_kwargs)
+                base_step = self._infer_base_plasticity_step(self.plasticity)
             else:
                 raise ValueError("plasticity must be a string key or a callable factory.")
+            self.plasticity_step = self._resolve_runtime_plasticity_step(
+                base_step,
+                self.plasticity_reward_type,
+            )
 
         self.enable_state_logger = enable_state_logger
         self.stats = SimulationStats()
@@ -357,6 +438,8 @@ class Simulation:
                     self.plasticity.spikes_in(pre_spikes, post_spikes)
             elif self.plasticity_step == "pre_post_v":
                 self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=reward)
+            elif self.plasticity_step == "sparse_pre_post_v":
+                self.plasticity.step_no_weight_changes(pre_spikes, post_spikes, self.neuron_states.V, reward=reward)
             elif self.plasticity_step == "post_isyn":
                 self.plasticity.step(post_spikes, I_syn, reward=reward)
             elif callable(self.plasticity_step):
@@ -387,7 +470,21 @@ class Simulation:
         """
         Apply a reward signal to the plasticity mechanism (if it uses it).
         """
-        self.plasticity.apply_weight_changes(reward)
+        if self.plasticity is None:
+            return
+
+        apply_fn = getattr(self.plasticity, "apply_weight_changes", None)
+        if not callable(apply_fn):
+            raise RuntimeError(
+                f"Plasticity '{type(self.plasticity).__name__}' does not implement apply_weight_changes(...)."
+            )
+
+        sig = inspect.signature(apply_fn)
+        param_names = set(sig.parameters.keys())
+        if "Vs" in param_names or "V" in param_names:
+            apply_fn(self.neuron_states.V, reward=reward)
+        else:
+            apply_fn(reward=reward)
 
     def configure_output_readout(self, output_neuron_indices, output_dim, enable_logger=False, rate_window_ms=100.0):
         """
@@ -401,7 +498,16 @@ class Simulation:
             rate_window_ms: Sliding window (ms) used for online firing-rate estimation.
                             Output units are mean subgroup firing rates in Hz/neuron.
         """
-        indices = np.asarray(output_neuron_indices, dtype=int).reshape(-1)
+        n_neurons = int(self.neuron_states.n_neurons)
+        raw_indices = np.asarray(output_neuron_indices)
+        if raw_indices.dtype == bool:
+            if raw_indices.ndim != 1 or raw_indices.size != n_neurons:
+                raise ValueError(
+                    "Boolean output_neuron_indices must be a 1D mask of length n_neurons."
+                )
+            indices = np.flatnonzero(raw_indices)
+        else:
+            indices = np.asarray(output_neuron_indices, dtype=int).reshape(-1)
         if output_dim <= 0:
             raise ValueError("output_dim must be a positive integer.")
         if indices.size == 0:
@@ -411,7 +517,6 @@ class Simulation:
                 "output_dim cannot exceed number of output neurons "
                 f"(got {output_dim} and {indices.size})."
             )
-        n_neurons = int(self.neuron_states.n_neurons)
         if np.any(indices < 0) or np.any(indices >= n_neurons):
             raise ValueError("output_neuron_indices contains out-of-range neuron indices.")
         if rate_window_ms <= 0:
