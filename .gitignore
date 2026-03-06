@@ -11,6 +11,8 @@ __pycache__/
 *.json
 *.toml
 *.db
+*.npy
+*.prof
 
 # Distribution / packaging
 .Python
