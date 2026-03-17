@@ -80,6 +80,7 @@ class SimulationStats:
         """
         Returns a dict with:
           - rate_mean_Hz / rate_median_Hz / rate_p95_Hz
+          - mean_voltage_mV / mean_voltage_mV_E / mean_voltage_mV_I
           - ISI_CV_median (want around 1)
           - refractory_violations_per_neuron (want 0)
           - Fano_median (bin_ms) (want around 1)
@@ -107,6 +108,23 @@ class SimulationStats:
         T_ms = T * dt_ms
         dt_s = dt_ms / 1000.0
         fs_hz = 1.0 / dt_s
+        inhib_mask = getattr(self, "inhibitory_mask", None)
+        if inhib_mask is not None and len(inhib_mask) == N:
+            inhib_mask = np.asarray(inhib_mask, dtype=bool)
+            exc_mask = ~inhib_mask
+        else:
+            inhib_mask = None
+            exc_mask = None
+
+        # --- membrane voltage stats (mV) ---
+        V = self.voltages()
+        if V.size > 0 and V.shape[1] == len(mask):
+            V = V[:, mask]
+            if V.shape[1] > 0:
+                out["mean_voltage_mV"] = float(np.mean(V))
+                if inhib_mask is not None:
+                    out["mean_voltage_mV_E"] = float(np.mean(V[exc_mask])) if np.any(exc_mask) else np.nan
+                    out["mean_voltage_mV_I"] = float(np.mean(V[inhib_mask])) if np.any(inhib_mask) else np.nan
 
         # --- firing rates (Hz) ---
         spike_counts_total = S.sum(axis=1)
@@ -114,15 +132,12 @@ class SimulationStats:
         out["rate_mean_Hz"] = float(np.nanmean(rates))
         out["rate_median_Hz"] = float(np.nanmedian(rates))
         out["rate_p95_Hz"] = float(np.nanpercentile(rates, 95))
-        inhib_mask_rates = getattr(self, "inhibitory_mask", None)
         active2_mask = spike_counts_total >= 2
-        if inhib_mask_rates is not None and len(inhib_mask_rates) == N:
-            inhib_mask_rates = np.asarray(inhib_mask_rates, dtype=bool)
-            exc_mask_rates = ~inhib_mask_rates
-            out["rate_mean_Hz_E"] = float(np.nanmean(rates[exc_mask_rates])) if np.any(exc_mask_rates) else 0.0
-            out["rate_mean_Hz_I"] = float(np.nanmean(rates[inhib_mask_rates])) if np.any(inhib_mask_rates) else 0.0
-            exc_active2 = exc_mask_rates & active2_mask
-            inh_active2 = inhib_mask_rates & active2_mask
+        if inhib_mask is not None:
+            out["rate_mean_Hz_E"] = float(np.nanmean(rates[exc_mask])) if np.any(exc_mask) else 0.0
+            out["rate_mean_Hz_I"] = float(np.nanmean(rates[inhib_mask])) if np.any(inhib_mask) else 0.0
+            exc_active2 = exc_mask & active2_mask
+            inh_active2 = inhib_mask & active2_mask
             out["rate_mean_Hz_E_active2spk"] = float(np.nanmean(rates[exc_active2])) if np.any(exc_active2) else 0.0
             out["rate_mean_Hz_I_active2spk"] = float(np.nanmean(rates[inh_active2])) if np.any(inh_active2) else 0.0
         active_mask = spike_counts_total > 0
@@ -143,10 +158,7 @@ class SimulationStats:
         valid_cvs = np.isfinite(cvs) & active_mask
         out["ISI_CV_median"] = float(np.median(cvs[valid_cvs])) if np.any(valid_cvs) else 0.0
         out["ISI_CV_mean"] = float(np.mean(cvs[valid_cvs])) if np.any(valid_cvs) else 0.0
-        inhib_mask = getattr(self, "inhibitory_mask", None)
-        if inhib_mask is not None and len(inhib_mask) == N:
-            inhib_mask = np.asarray(inhib_mask, dtype=bool)
-            exc_mask = ~inhib_mask
+        if inhib_mask is not None:
             valid_exc = valid_cvs & exc_mask
             valid_inh = valid_cvs & inhib_mask
             out["ISI_CV_mean_E"] = float(np.mean(cvs[valid_exc])) if np.any(valid_exc) else 0.0
