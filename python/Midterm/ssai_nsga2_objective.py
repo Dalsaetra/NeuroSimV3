@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 import sys
 from dataclasses import asdict, dataclass
@@ -6,7 +8,11 @@ from typing import Dict, Tuple
 
 import networkx as nx
 import numpy as np
-import optuna
+
+try:
+    import optuna
+except ModuleNotFoundError:  # pragma: no cover - post-analysis can run without Optuna installed
+    optuna = None
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -58,6 +64,8 @@ STD_SUMMARY_KEYS = (
     "rate_late_exc_Hz",
     "rate_late_inh_Hz",
     "mean_voltage_post_mV",
+    "mean_voltage_post_exc_mV",
+    "mean_voltage_post_inh_mV",
     "balance_min_fraction",
     "balance_total_effective_strength",
     "conductance_mean_AMPA",
@@ -307,12 +315,21 @@ class SSAIMultiObjective:
         )
 
         v_mean = -60.0
+        v_mean_exc = -60.0
+        v_mean_inh = -55.0
         voltages = sim.stats.voltages()
         if voltages.size > 0:
             t_ms = sim.stats.times_ms(dt_ms=cfg.dt_ms)
             v_mask = (t_ms >= cfg.ext_on_ms) & (t_ms <= cfg.total_ms)
             if np.any(v_mask):
-                v_mean = float(np.mean(voltages[:, v_mask]))
+                voltages_post = voltages[:, v_mask]
+                v_mean = float(np.mean(voltages_post))
+                inhib_mask = np.asarray(sim.stats.inhibitory_mask, dtype=bool)
+                exc_mask = ~inhib_mask
+                if np.any(exc_mask):
+                    v_mean_exc = float(np.mean(voltages_post[exc_mask]))
+                if np.any(inhib_mask):
+                    v_mean_inh = float(np.mean(voltages_post[inhib_mask]))
 
         s_cv = _safe_tanh(max(0.0, isi_cv_mean) / 2.0)
         s_fano = _safe_tanh(max(0.0, fano_300) / 4.0)
@@ -354,6 +371,8 @@ class SSAIMultiObjective:
             "rate_late_inh_Hz": rate_late_inh,
             "psd_peak_ratio": float(peak_ratio),
             "mean_voltage_post_mV": float(v_mean),
+            "mean_voltage_post_exc_mV": float(v_mean_exc),
+            "mean_voltage_post_inh_mV": float(v_mean_inh),
             "p_corr": float(p_corr),
             "p_peak": float(p_peak),
             "p_vhigh": float(p_vhigh),
@@ -381,18 +400,12 @@ class SSAIMultiObjective:
         return float(1.5 * s_cv + 1.0 * s_fano - 1.5 * p_corr - 1.0 * p_peak)
 
     def _score_regime(self, diagnostics: Dict[str, float]) -> float:
-        rate_post = float(diagnostics.get("rate_post_Hz", 0.0))
-        rate_late = float(diagnostics.get("rate_late_Hz", 0.0))
-        pop_entropy = float(diagnostics.get("pop_spec_entropy", 0.0))
-        v_mean = float(diagnostics.get("mean_voltage_post_mV", -60.0))
+        v_mean_exc = float(diagnostics.get("mean_voltage_post_exc_mV", -60.0))
+        v_mean_inh = float(diagnostics.get("mean_voltage_post_inh_mV", -55.0))
 
-        mean_rate = 0.5 * (rate_post + rate_late)
-        rate_target = 12.0
-        rate_band = 10.0
-        rate_term = 1.0 - min(1.0, abs(mean_rate - rate_target) / rate_band)
-        entropy_term = _safe_tanh(max(0.0, pop_entropy) / 8.0)
-        p_vhigh = max(0.0, (v_mean + 30.0) / 30.0)
-        return float(1.5 * rate_term + 1.0 * entropy_term - 1.0 * p_vhigh)
+        p_vhigh_exc = max(0.0, (v_mean_exc - (-60.0)) / 10.0)
+        p_vhigh_inh = max(0.0, (v_mean_inh - (-55.0)) / 10.0)
+        return float(1.0 - (1.5 * p_vhigh_exc + 1.0 * p_vhigh_inh))
 
     def _hard_reject(self, diagnostics: Dict[str, float]) -> Tuple[bool, str]:
         rate_late = float(diagnostics.get("rate_late_Hz", 0.0))
