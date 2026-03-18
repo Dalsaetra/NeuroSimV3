@@ -255,6 +255,13 @@ class SimulationStats:
                     Pxx_accum += Pxx_i
             Pxx = Pxx_accum / N
 
+        band_mask = (f >= 2.0) & (f <= 120.0)
+        if np.any(band_mask):
+            band = np.asarray(Pxx[band_mask], dtype=float)
+            band_median = float(np.median(band))
+            out["psd_peak_ratio"] = float(np.max(band) / (band_median + 1e-12)) if band_median > 0.0 else 0.0
+        else:
+            out["psd_peak_ratio"] = 0.0
         out["pop_spec_entropy"] = spectral_entropy(Pxx)
         out["pop_psd_freq_hz"] = f
         out["pop_psd"] = Pxx
