@@ -33,6 +33,9 @@ class AxonalDynamics:
         self._ring_events = [[] for _ in range(self._ring_len)]
         self._ring_epoch = np.full(self._ring_len, -1, dtype=np.int64)
         self._inflight = 0
+        self._event_stride = self.connectome.max_synapses
+        self._empty_rows = np.empty(0, dtype=np.int32)
+        self._empty_cols = np.empty(0, dtype=np.int32)
 
         self._spike_buf = np.zeros(
             (self.connectome.neuron_population.n_neurons, self.connectome.max_synapses),
@@ -46,6 +49,11 @@ class AxonalDynamics:
         if spike_rows.size == 0:
             return
         emit_step = int(np.rint(t_now / self.dt))
+        ring_len = self._ring_len
+        ring_events = self._ring_events
+        ring_epoch = self._ring_epoch
+        event_stride = self._event_stride
+        inflight = self._inflight
 
         for i in spike_rows:
             cols = self._syn_cols_by_pre[i]
@@ -53,31 +61,44 @@ class AxonalDynamics:
                 continue
             arrival_steps = emit_step + self._delay_steps_by_pre[i]
             for j, arrival_step in zip(cols, arrival_steps):
-                slot = int(arrival_step % self._ring_len)
-                if self._ring_epoch[slot] != arrival_step:
-                    self._ring_events[slot].clear()
-                    self._ring_epoch[slot] = arrival_step
-                self._ring_events[slot].append((int(i), int(j)))
-                self._inflight += 1
+                slot = int(arrival_step % ring_len)
+                if ring_epoch[slot] != arrival_step:
+                    ring_events[slot].clear()
+                    ring_epoch[slot] = arrival_step
+                ring_events[slot].append(int(i) * event_stride + int(j))
+                inflight += 1
+        self._inflight = inflight
 
-    def check(self, t_now):
-        arrival_step = int(np.rint(t_now / self.dt))
+    def _pop_arrived_events(self, arrival_step):
         slot = int(arrival_step % self._ring_len)
-
-        spikes = self._spike_buf
-        spikes.fill(False)
-
         if self._ring_epoch[slot] != arrival_step:
-            return spikes
-
+            return None
         arrived = self._ring_events[slot]
         if not arrived:
-            return spikes
-
-        rows, cols = zip(*arrived)
-        spikes[rows, cols] = True
+            return None
         self._inflight -= len(arrived)
+        return arrived
+
+    def _unpack_arrived_events(self, arrived):
+        flat = np.fromiter(arrived, dtype=np.int64, count=len(arrived))
+        rows = (flat // self._event_stride).astype(np.int32, copy=False)
+        cols = (flat % self._event_stride).astype(np.int32, copy=False)
         arrived.clear()
+        return rows, cols
+
+    def check_sparse(self, t_now):
+        arrival_step = int(np.rint(t_now / self.dt))
+        arrived = self._pop_arrived_events(arrival_step)
+        if arrived is None:
+            return self._empty_rows, self._empty_cols
+        return self._unpack_arrived_events(arrived)
+
+    def check(self, t_now):
+        spikes = self._spike_buf
+        spikes.fill(False)
+        rows, cols = self.check_sparse(t_now)
+        if rows.size:
+            spikes[rows, cols] = True
         return spikes
 
     def __len__(self):

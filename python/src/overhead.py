@@ -428,10 +428,14 @@ class Simulation:
         self.neuron_states.step(I_syn, self.dt)
         post_spikes = self.neuron_states.spike # shape n_neurons x 1
         # Update the axonal dynamics
-        pre_spikes = self.axonal_dynamics.check(self.t_now + self.dt) # shape n_neurons x max_synapses
         if self.plasticity is not None and self.plasticity_step:
+            pre_spikes = self.axonal_dynamics.check(self.t_now + self.dt) # shape n_neurons x max_synapses
+            pre_spike_rows = None
+            pre_spike_cols = None
             self.pre_spikes = pre_spikes.copy()  # Store only when plasticity uses it
         else:
+            pre_spikes = None
+            pre_spike_rows, pre_spike_cols = self.axonal_dynamics.check_sparse(self.t_now + self.dt)
             self.pre_spikes = None
         # Push the spikes to the axonal dynamics, do it after the pre_spikes are checked,
         # as the spikes comes from the end of the current step
@@ -459,7 +463,10 @@ class Simulation:
             else:
                 raise ValueError(f"Unknown plasticity_step '{self.plasticity_step}'.")
         # Update synapse reaction class from the pre_spikes
-        self.synapse_dynamics.spike_input(pre_spikes)
+        if pre_spikes is not None:
+            self.synapse_dynamics.spike_input(pre_spikes)
+        else:
+            self.synapse_dynamics.spike_input_sparse(pre_spike_rows, pre_spike_cols)
         if spike_ext is not None:
             self.synapse_dynamics.sensory_spike_input(spike_ext)
         # Update the current time
