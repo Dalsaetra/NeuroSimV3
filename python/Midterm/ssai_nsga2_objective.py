@@ -35,8 +35,7 @@ PARAM_SPECS = [
     ("A_GABA_A", 0.0001, 0.05, True),
     ("A_GABA_B", 0.0001, 0.05, True),
     ("inhibitory_scale_g", 0.1, 1000.0, False),
-    ("v_ext", 10.0, 200, False),
-    ("external_amplitude", 0.5, 20.0, False),
+    ("external_amplitude", 0.1, 20.0, True),
     ("recurrent_exc_lognorm_sigma", 0.1, 3.0, False),
     ("inhibitory_nmda_weight", 0.0, 1.0, False),
 ]
@@ -49,7 +48,6 @@ OBJECTIVE_NAMES = (
     "transmitter_balance",
 )
 STD_SUMMARY_KEYS = (
-    "score_ssai",
     "score_balance",
     "score_persistence",
     "score_asynchrony",
@@ -63,12 +61,15 @@ STD_SUMMARY_KEYS = (
     "rate_post_inh_Hz",
     "rate_late_exc_Hz",
     "rate_late_inh_Hz",
-    "participation_frac_mean_20ms",
-    "participation_frac_p95_20ms",
     "mean_voltage_post_mV",
     "voltage_rest_var_post_exc_mV2",
     "voltage_rest_var_post_inh_mV2",
     "conductance_load_post",
+    "saturation_freq_AMPA",
+    "saturation_freq_NMDA",
+    "saturation_freq_GABA_A",
+    "saturation_freq_GABA_B",
+    "saturation_freq_mean",
     "balance_min_fraction",
     "balance_total_effective_strength",
     "conductance_mean_AMPA",
@@ -95,6 +96,7 @@ class SearchConfig:
     dt_ms: float = 0.1
     ext_on_ms: float = 1000.0
     total_ms: float = 3000.0
+    external_rate_hz: float = 50.0
     n_repeats: int = 3
     delay_mean_exc_ms: float = 1.5
     delay_std_exc_ms: float = 0.3
@@ -109,28 +111,21 @@ class SearchConfig:
     transmitter_balance_entropy_weight: float = 0.5
     transmitter_balance_min_weight: float = 0.5
     transmitter_balance_target_fraction: float = 0.25
-    reject_rate_late_low_hz: float = 0.5
-    reject_rate_late_exc_high_hz: float = 10.0
-    reject_rate_late_inh_high_hz: float = 100.0
     reject_rate_late_extreme_low_hz: float = 0.05
-    reject_rate_late_exc_extreme_high_hz: float = 20.0
-    reject_rate_late_inh_extreme_high_hz: float = 200.0
-    late_rate_low_penalty_weight: float = 4.0
-    late_rate_exc_high_penalty_weight: float = 4.0
-    late_rate_inh_high_penalty_weight: float = 4.0
+    persistence_rate_min_hz: float = 1.0
+    persistence_rate_exc_max_hz: float = 10.0
+    persistence_rate_inh_max_hz: float = 100.0
     regime_voltage_var_exc_scale_mV2: float = 100.0
     regime_voltage_var_inh_scale_mV2: float = 100.0
-    regime_voltage_var_exc_weight: float = 1.5
-    regime_voltage_var_inh_weight: float = 1.0
+    regime_voltage_var_exc_weight: float = 1.0
+    regime_voltage_var_inh_weight: float = 0.2
     regime_conductance_load_scale: float = 100.0
-    regime_conductance_load_weight: float = 0.2
-    asynchrony_participation_bin_ms: float = 20.0
-    asynchrony_participation_p95_threshold: float = 0.15
-    asynchrony_cv_weight: float = 1.25
-    asynchrony_fano_weight: float = 0.75
-    asynchrony_corr_weight: float = 1.5
-    asynchrony_peak_weight: float = 0.25
-    asynchrony_participation_weight: float = 4.0
+    regime_conductance_load_weight: float = 1.0
+    regime_saturation_threshold: float = 0.999
+    regime_saturation_weight: float = 10000.0
+    asynchrony_cv_weight: float = 1.0
+    asynchrony_fano_weight: float = 1.0
+    asynchrony_corr_weight: float = 1.0
     reject_objective_value: float = -100.0
     base_seed: int = 1234
 
@@ -141,29 +136,6 @@ def config_to_dict(cfg: SearchConfig) -> Dict[str, object]:
 
 def _safe_tanh(x: float) -> float:
     return float(np.tanh(float(x)))
-
-
-def _compute_peak_ratio(freq_hz: np.ndarray, psd: np.ndarray) -> float:
-    if freq_hz is None or psd is None:
-        return 0.0
-    if len(freq_hz) == 0 or len(psd) == 0:
-        return 0.0
-
-    band_mask = (freq_hz >= 2.0) & (freq_hz <= 120.0)
-    if not np.any(band_mask):
-        return 0.0
-
-    band = psd[band_mask]
-    median = float(np.median(band))
-    if median <= 0:
-        return 0.0
-    peak = float(np.max(band))
-    return peak / (median + 1e-12)
-
-
-def _nmda_voltage_factor(voltage_mV: float) -> float:
-    mg = 1.0
-    return float(1.0 / (1.0 + 0.28 * mg * np.exp(-0.062 * float(voltage_mV))))
 
 
 def _aggregate_repeat_metrics(repeat_metrics: Tuple[Dict[str, float], ...]) -> Dict[str, float]:
@@ -298,18 +270,16 @@ class SSAIMultiObjective:
         ts = np.zeros_like(spikes)
         return vs, us, spikes, ts
 
-    def _score_ssai(self, sim: Simulation) -> Tuple[float, Dict[str, float]]:
+    def _compute_diagnostics(self, sim: Simulation) -> Dict[str, float]:
         cfg = self.cfg
 
         post_stats = sim.stats.compute_metrics(
             cfg.dt_ms,
-            bin_ms_participation=cfg.asynchrony_participation_bin_ms,
             t_start_ms=cfg.ext_on_ms,
             t_stop_ms=cfg.total_ms,
         )
         late_stats = sim.stats.compute_metrics(
             cfg.dt_ms,
-            bin_ms_participation=cfg.asynchrony_participation_bin_ms,
             t_start_ms=max(cfg.ext_on_ms, cfg.total_ms - 300.0),
             t_stop_ms=cfg.total_ms,
         )
@@ -324,14 +294,6 @@ class SSAIMultiObjective:
         rate_post_inh = float(post_stats.get("rate_mean_Hz_I", 0.0))
         rate_late_exc = float(late_stats.get("rate_mean_Hz_E", 0.0))
         rate_late_inh = float(late_stats.get("rate_mean_Hz_I", 0.0))
-        participation_bin_ms = int(round(cfg.asynchrony_participation_bin_ms))
-        participation_mean = float(post_stats.get(f"participation_frac_mean_{participation_bin_ms}ms", 0.0))
-        participation_p95 = float(post_stats.get(f"participation_frac_p95_{participation_bin_ms}ms", 0.0))
-
-        peak_ratio = _compute_peak_ratio(
-            post_stats.get("pop_psd_freq_hz", np.array([])),
-            post_stats.get("pop_psd", np.array([])),
-        )
 
         v_mean = -60.0
         v_rest_var_exc = 0.0
@@ -352,34 +314,10 @@ class SSAIMultiObjective:
                     inh_dev = voltages_post[inhib_mask] - (-55.0)
                     v_rest_var_inh = float(np.mean(inh_dev * inh_dev))
 
-        s_cv = _safe_tanh(max(0.0, isi_cv_mean) / 2.0)
-        s_fano = _safe_tanh(max(0.0, fano_300) / 4.0)
-        s_persist = _safe_tanh(min(rate_post, rate_late) / 5.0)
-        s_rate = _safe_tanh(((rate_post + rate_late) * 0.5) / 20.0)
-        s_entropy = _safe_tanh(max(0.0, pop_entropy) / 8.0)
-
         p_corr = max(0.0, noise_corr_50 - 0.10)
-        p_peak = max(0.0, peak_ratio - 10.0) / 10.0
         p_vhigh = max(0.0, (v_mean + 30.0) / 30.0)
 
-        score = (
-            2.0 * s_cv
-            + 1.5 * s_fano
-            + 3.0 * s_persist
-            + 2.0 * s_rate
-            + 1.0 * s_entropy
-            - 2.0 * p_corr
-            - 1.5 * p_peak
-            - 1.0 * p_vhigh
-        )
-
-        if rate_late < 0.5:
-            score -= (0.5 - rate_late) * 2.0
-        if rate_late < 2.0:
-            score -= (2.0 - rate_late) * 1.0
-
         diagnostics = {
-            "score_ssai": float(score),
             "ISI_CV_mean": isi_cv_mean,
             "Fano_median_300ms": fano_300,
             "mean_noise_corr_50ms": noise_corr_50,
@@ -390,58 +328,81 @@ class SSAIMultiObjective:
             "rate_post_inh_Hz": rate_post_inh,
             "rate_late_exc_Hz": rate_late_exc,
             "rate_late_inh_Hz": rate_late_inh,
-            "participation_frac_mean_20ms": participation_mean,
-            "participation_frac_p95_20ms": participation_p95,
-            "psd_peak_ratio": float(peak_ratio),
             "mean_voltage_post_mV": float(v_mean),
             "voltage_rest_var_post_exc_mV2": float(v_rest_var_exc),
             "voltage_rest_var_post_inh_mV2": float(v_rest_var_inh),
             "p_corr": float(p_corr),
-            "p_peak": float(p_peak),
             "p_vhigh": float(p_vhigh),
         }
-        return float(score), diagnostics
+        return diagnostics
 
     def _score_persistence(self, diagnostics: Dict[str, float]) -> float:
         rate_post = float(diagnostics.get("rate_post_Hz", 0.0))
         rate_late = float(diagnostics.get("rate_late_Hz", 0.0))
-        persist_core = _safe_tanh(min(rate_post, rate_late) / 2.0)
-        late_support = _safe_tanh(rate_late / 2.0)
-        return float(0.7 * persist_core + 0.3 * late_support)
+        rate_post_exc = float(diagnostics.get("rate_post_exc_Hz", 0.0))
+        rate_late_exc = float(diagnostics.get("rate_late_exc_Hz", 0.0))
+        rate_post_inh = float(diagnostics.get("rate_post_inh_Hz", 0.0))
+        rate_late_inh = float(diagnostics.get("rate_late_inh_Hz", 0.0))
+
+        def _low_penalty(rate_hz: float, threshold_hz: float) -> float:
+            if rate_hz >= threshold_hz:
+                return 0.0
+            deficit = (threshold_hz - rate_hz) / max(threshold_hz, 1e-9)
+            return float(deficit * deficit)
+
+        def _high_penalty(rate_hz: float, threshold_hz: float) -> float:
+            if rate_hz <= threshold_hz:
+                return 0.0
+            excess = (rate_hz - threshold_hz) / max(threshold_hz, 1e-9)
+            return float(excess * excess)
+
+        low_penalty = 0.5 * (
+            _low_penalty(rate_post, self.cfg.persistence_rate_min_hz)
+            + _low_penalty(rate_late, self.cfg.persistence_rate_min_hz)
+        )
+        high_exc_penalty = 0.5 * (
+            _high_penalty(rate_post_exc, self.cfg.persistence_rate_exc_max_hz)
+            + _high_penalty(rate_late_exc, self.cfg.persistence_rate_exc_max_hz)
+        )
+        high_inh_penalty = 0.5 * (
+            _high_penalty(rate_post_inh, self.cfg.persistence_rate_inh_max_hz)
+            + _high_penalty(rate_late_inh, self.cfg.persistence_rate_inh_max_hz)
+        )
+
+        return float(1.0 - low_penalty - high_exc_penalty - high_inh_penalty)
 
     def _score_asynchrony(self, diagnostics: Dict[str, float]) -> float:
         isi_cv_mean = float(diagnostics.get("ISI_CV_mean", 0.0))
         fano_300 = float(diagnostics.get("Fano_median_300ms", 0.0))
         noise_corr_50 = float(diagnostics.get("mean_noise_corr_50ms", 0.0))
-        peak_ratio = float(diagnostics.get("psd_peak_ratio", 0.0))
-        participation_p95_20 = float(diagnostics.get("participation_frac_p95_20ms", 0.0))
 
         s_cv = _safe_tanh(max(0.0, isi_cv_mean) / 2.0)
-        s_fano = _safe_tanh(max(0.0, fano_300) / 4.0)
-        p_corr = max(0.0, noise_corr_50 - 0.10)
-        p_peak = max(0.0, peak_ratio - 10.0) / 10.0
-        p_participation = max(
-            0.0,
-            (participation_p95_20 - self.cfg.asynchrony_participation_p95_threshold)
-            / max(self.cfg.asynchrony_participation_p95_threshold, 1e-9),
-        )
+        s_fano = _safe_tanh(max(0.0, fano_300) / 2.0)
+        p_corr = max(0.0, noise_corr_50 - 0.05) / 0.05
 
         return float(
             self.cfg.asynchrony_cv_weight * s_cv
             + self.cfg.asynchrony_fano_weight * s_fano
             - self.cfg.asynchrony_corr_weight * p_corr
-            - self.cfg.asynchrony_peak_weight * p_peak
-            - self.cfg.asynchrony_participation_weight * p_participation
         )
 
-    def _score_regime(self, diagnostics: Dict[str, float], conductance_means: Dict[str, float]) -> float:
+    def _score_regime(
+        self,
+        diagnostics: Dict[str, float],
+        conductance_means: Dict[str, float],
+        saturation_freqs: Dict[str, float],
+    ) -> float:
         v_var_exc = float(diagnostics.get("voltage_rest_var_post_exc_mV2", 0.0))
         v_var_inh = float(diagnostics.get("voltage_rest_var_post_inh_mV2", 0.0))
         conductance_load = float(sum(float(conductance_means.get(name, 0.0)) for name in TRANSMITTERS))
+        saturation_mean = float(
+            np.mean([float(saturation_freqs.get(name, 0.0)) for name in TRANSMITTERS])
+        )
 
         p_var_exc = max(0.0, v_var_exc) / max(self.cfg.regime_voltage_var_exc_scale_mV2, 1e-9)
         p_var_inh = max(0.0, v_var_inh) / max(self.cfg.regime_voltage_var_inh_scale_mV2, 1e-9)
         p_cond = math.log1p(max(0.0, conductance_load) / max(self.cfg.regime_conductance_load_scale, 1e-9))
+        p_sat = max(0.0, saturation_mean)
 
         return float(
             1.0
@@ -449,45 +410,15 @@ class SSAIMultiObjective:
                 self.cfg.regime_voltage_var_exc_weight * p_var_exc
                 + self.cfg.regime_voltage_var_inh_weight * p_var_inh
                 + self.cfg.regime_conductance_load_weight * p_cond
+                + self.cfg.regime_saturation_weight * p_sat
             )
         ) / 10.0
 
     def _hard_reject(self, diagnostics: Dict[str, float]) -> Tuple[bool, str]:
         rate_late = float(diagnostics.get("rate_late_Hz", 0.0))
-        rate_late_exc = float(diagnostics.get("rate_late_exc_Hz", 0.0))
-        rate_late_inh = float(diagnostics.get("rate_late_inh_Hz", 0.0))
         if rate_late < self.cfg.reject_rate_late_extreme_low_hz:
             return True, "late_rate_too_low"
-        if rate_late_exc > self.cfg.reject_rate_late_exc_extreme_high_hz:
-            return True, "late_exc_rate_too_high"
-        if rate_late_inh > self.cfg.reject_rate_late_inh_extreme_high_hz:
-            return True, "late_inh_rate_too_high"
         return False, ""
-
-    def _late_rate_soft_penalty(self, diagnostics: Dict[str, float]) -> Tuple[float, str]:
-        rate_late = float(diagnostics.get("rate_late_Hz", 0.0))
-        rate_late_exc = float(diagnostics.get("rate_late_exc_Hz", 0.0))
-        rate_late_inh = float(diagnostics.get("rate_late_inh_Hz", 0.0))
-        if rate_late < self.cfg.reject_rate_late_low_hz:
-            deficit = (self.cfg.reject_rate_late_low_hz - rate_late) / max(self.cfg.reject_rate_late_low_hz, 1e-9)
-            return float(self.cfg.late_rate_low_penalty_weight * deficit * deficit), "late_rate_low_penalty"
-        penalty = 0.0
-        reasons = []
-        if rate_late_exc > self.cfg.reject_rate_late_exc_high_hz:
-            excess_exc = (rate_late_exc - self.cfg.reject_rate_late_exc_high_hz) / max(
-                self.cfg.reject_rate_late_exc_high_hz,
-                1e-9,
-            )
-            penalty += float(self.cfg.late_rate_exc_high_penalty_weight * excess_exc * excess_exc)
-            reasons.append("late_exc_rate_high_penalty")
-        if rate_late_inh > self.cfg.reject_rate_late_inh_high_hz:
-            excess_inh = (rate_late_inh - self.cfg.reject_rate_late_inh_high_hz) / max(
-                self.cfg.reject_rate_late_inh_high_hz,
-                1e-9,
-            )
-            penalty += float(self.cfg.late_rate_inh_high_penalty_weight * excess_inh * excess_inh)
-            reasons.append("late_inh_rate_high_penalty")
-        return float(penalty), ",".join(reasons)
 
     def _score_transmitter_balance(
         self,
@@ -553,30 +484,31 @@ class SSAIMultiObjective:
             elif isinstance(value, (float, int, str, bool)):
                 trial.set_user_attr(key, value)
 
-    def __call__(self, trial: optuna.Trial) -> Tuple[float, float, float, float]:
+    def evaluate_params(
+        self,
+        params: Dict[str, float],
+        trial_seed: int | None = None,
+    ) -> Dict[str, object]:
         cfg = self.cfg
-        trial_seed = cfg.base_seed + 1009 * (trial.number + 1)
+        trial_seed = cfg.base_seed if trial_seed is None else int(trial_seed)
         trial_rng = np.random.default_rng(trial_seed)
-        params = suggest_params(trial)
 
-        syn_g_ampa_max = params["g_AMPA_max"]
-        syn_g_nmda_max = params["g_NMDA_max"]
-        syn_g_gabaa_max = params["g_GABA_A_max"]
-        syn_g_gabab_max = params["g_GABA_B_max"]
+        syn_g_ampa_max = float(params["g_AMPA_max"])
+        syn_g_nmda_max = float(params["g_NMDA_max"])
+        syn_g_gabaa_max = float(params["g_GABA_A_max"])
+        syn_g_gabab_max = float(params["g_GABA_B_max"])
 
-        a_ampa = params["A_AMPA"]
-        a_nmda = params["A_NMDA"]
-        a_gabaa = params["A_GABA_A"]
-        a_gabab = params["A_GABA_B"]
+        a_ampa = float(params["A_AMPA"])
+        a_nmda = float(params["A_NMDA"])
+        a_gabaa = float(params["A_GABA_A"])
+        a_gabab = float(params["A_GABA_B"])
 
-        inhib_g = params["inhibitory_scale_g"]
-        v_ext = params["v_ext"]
-        ext_amp = params["external_amplitude"]
-        recurrent_exc_sigma = params["recurrent_exc_lognorm_sigma"]
-        inhibitory_nmda_weight = params["inhibitory_nmda_weight"]
+        inhib_g = float(params["inhibitory_scale_g"])
+        ext_amp = float(params["external_amplitude"])
+        recurrent_exc_sigma = float(params["recurrent_exc_lognorm_sigma"])
+        inhibitory_nmda_weight = float(params["inhibitory_nmda_weight"])
 
         graph = self.template_graph.copy()
-
         for u, _, data in graph.edges(data=True):
             data["weight"] = float(inhib_g if u >= cfg.n_excit else 1.0)
 
@@ -629,29 +561,37 @@ class SSAIMultiObjective:
             syn.A_GABA_A = a_gabaa
             syn.A_GABA_B = a_gabab
 
-            poisson = PoissonInput(cfg.n_neurons, rate=v_ext, amplitude=ext_amp_vec, rng=rng)
+            poisson = PoissonInput(cfg.n_neurons, rate=cfg.external_rate_hz, amplitude=ext_amp_vec, rng=rng)
 
             for _ in range(ext_on_steps):
                 sim.step(spike_ext=poisson(cfg.dt_ms))
 
             conductance_sums = {name: 0.0 for name in TRANSMITTERS}
+            saturation_sums = {name: 0.0 for name in TRANSMITTERS}
             for _ in range(ext_off_steps):
                 sim.step()
                 conductance_sums["AMPA"] += float(np.mean(syn.g_AMPA * syn.g_AMPA_max))
                 conductance_sums["NMDA"] += float(np.mean(syn.g_NMDA * syn.g_NMDA_max))
                 conductance_sums["GABA_A"] += float(np.mean(syn.g_GABA_A * syn.g_GABA_A_max))
                 conductance_sums["GABA_B"] += float(np.mean(syn.g_GABA_B * syn.g_GABA_B_max))
+                saturation_sums["AMPA"] += float(np.mean(syn.g_AMPA >= cfg.regime_saturation_threshold))
+                saturation_sums["NMDA"] += float(np.mean(syn.g_NMDA >= cfg.regime_saturation_threshold))
+                saturation_sums["GABA_A"] += float(np.mean(syn.g_GABA_A >= cfg.regime_saturation_threshold))
+                saturation_sums["GABA_B"] += float(np.mean(syn.g_GABA_B >= cfg.regime_saturation_threshold))
 
             conductance_means = {
                 name: float(conductance_sums[name] / ext_off_steps) if ext_off_steps > 0 else 0.0
                 for name in TRANSMITTERS
             }
-
-            metrics: Dict[str, float] = {
+            saturation_freqs = {
+                name: float(saturation_sums[name] / ext_off_steps) if ext_off_steps > 0 else 0.0
+                for name in TRANSMITTERS
             }
-            ssai_score, ssai_diagnostics = self._score_ssai(sim)
-            metrics.update(ssai_diagnostics)
-            reject, reject_reason = self._hard_reject(ssai_diagnostics)
+
+            metrics: Dict[str, float] = {}
+            diagnostics = self._compute_diagnostics(sim)
+            metrics.update(diagnostics)
+            reject, reject_reason = self._hard_reject(diagnostics)
             if reject:
                 persistence_score = float(cfg.reject_objective_value)
                 asynchrony_score = float(cfg.reject_objective_value)
@@ -667,68 +607,132 @@ class SSAIMultiObjective:
                     balance_diagnostics[f"balance_param_strength_{name}"] = float(params[f"g_{name}_max"])
                     balance_diagnostics[f"balance_effective_strength_{name}"] = 0.0
                     balance_diagnostics[f"balance_fraction_{name}"] = 0.0
-                soft_penalty = 0.0
-                soft_penalty_reason = ""
             else:
-                persistence_score = self._score_persistence(ssai_diagnostics)
-                asynchrony_score = self._score_asynchrony(ssai_diagnostics)
-                regime_score = self._score_regime(ssai_diagnostics, conductance_means)
+                persistence_score = self._score_persistence(diagnostics)
+                asynchrony_score = self._score_asynchrony(diagnostics)
+                regime_score = self._score_regime(diagnostics, conductance_means, saturation_freqs)
                 balance_score, balance_diagnostics = self._score_transmitter_balance(
                     params=params,
                     conductance_means=conductance_means,
                 )
-                soft_penalty, soft_penalty_reason = self._late_rate_soft_penalty(ssai_diagnostics)
-                if soft_penalty > 0.0:
-                    persistence_score -= 1.5 * soft_penalty
-                    regime_score -= 1.5 * soft_penalty
-                    asynchrony_score -= 0.5 * soft_penalty
-                    balance_score -= 0.25 * soft_penalty
 
-            metrics["score_ssai"] = float(ssai_score)
             metrics["score_persistence"] = float(persistence_score)
             metrics["score_asynchrony"] = float(asynchrony_score)
             metrics["score_regime"] = float(regime_score)
             metrics["score_balance"] = float(balance_score)
             metrics["hard_reject"] = float(1.0 if reject else 0.0)
-            metrics["late_rate_soft_penalty"] = float(soft_penalty)
+            metrics["late_rate_soft_penalty"] = 0.0
             metrics["conductance_load_post"] = float(sum(conductance_means[name] for name in TRANSMITTERS))
             for name in TRANSMITTERS:
                 metrics[f"conductance_mean_{name}"] = float(conductance_means[name])
+                metrics[f"saturation_freq_{name}"] = float(saturation_freqs[name])
+            metrics["saturation_freq_mean"] = float(np.mean(list(saturation_freqs.values())))
             metrics.update(balance_diagnostics)
             repeat_metrics.append(metrics)
-            repeat_reject_reasons.append(reject_reason or soft_penalty_reason)
+            repeat_reject_reasons.append(reject_reason)
 
         aggregated_metrics = _aggregate_repeat_metrics(tuple(repeat_metrics))
-        persistence_score = float(aggregated_metrics["score_persistence"])
-        asynchrony_score = float(aggregated_metrics["score_asynchrony"])
-        regime_score = float(aggregated_metrics["score_regime"])
-        balance_score = float(aggregated_metrics["score_balance"])
+        objectives = {
+            "persistence": float(aggregated_metrics["score_persistence"]),
+            "asynchrony": float(aggregated_metrics["score_asynchrony"]),
+            "regime": float(aggregated_metrics["score_regime"]),
+            "transmitter_balance": float(aggregated_metrics["score_balance"]),
+        }
 
-        diagnostics: Dict[str, object] = {
+        diagnostics_out: Dict[str, object] = {
             "trial_seed": int(trial_seed),
             "n_repeats": int(cfg.n_repeats),
-            "score_persistence": float(persistence_score),
-            "score_asynchrony": float(asynchrony_score),
-            "score_regime": float(regime_score),
-            "score_balance": float(balance_score),
+            "score_persistence": objectives["persistence"],
+            "score_asynchrony": objectives["asynchrony"],
+            "score_regime": objectives["regime"],
+            "score_balance": objectives["transmitter_balance"],
             "network_density_target": float(cfg.n_out / cfg.n_neurons),
             "n_out": int(cfg.n_out),
         }
-        diagnostics.update(self.template_topology_metrics)
-        diagnostics.update(aggregated_metrics)
+        diagnostics_out.update(self.template_topology_metrics)
+        diagnostics_out.update(aggregated_metrics)
         for repeat_idx, metrics in enumerate(repeat_metrics):
-            diagnostics[f"repeat_{repeat_idx}_seed"] = int(trial_seed + 7919 * repeat_idx)
-            diagnostics[f"repeat_{repeat_idx}_score_persistence"] = float(metrics["score_persistence"])
-            diagnostics[f"repeat_{repeat_idx}_score_asynchrony"] = float(metrics["score_asynchrony"])
-            diagnostics[f"repeat_{repeat_idx}_score_regime"] = float(metrics["score_regime"])
-            diagnostics[f"repeat_{repeat_idx}_score_balance"] = float(metrics["score_balance"])
-            diagnostics[f"repeat_{repeat_idx}_score_ssai"] = float(metrics["score_ssai"])
-            diagnostics[f"repeat_{repeat_idx}_reject_reason"] = repeat_reject_reasons[repeat_idx]
+            diagnostics_out[f"repeat_{repeat_idx}_seed"] = int(trial_seed + 7919 * repeat_idx)
+            diagnostics_out[f"repeat_{repeat_idx}_score_persistence"] = float(metrics["score_persistence"])
+            diagnostics_out[f"repeat_{repeat_idx}_score_asynchrony"] = float(metrics["score_asynchrony"])
+            diagnostics_out[f"repeat_{repeat_idx}_score_regime"] = float(metrics["score_regime"])
+            diagnostics_out[f"repeat_{repeat_idx}_score_balance"] = float(metrics["score_balance"])
+            diagnostics_out[f"repeat_{repeat_idx}_reject_reason"] = repeat_reject_reasons[repeat_idx]
 
+        return {
+            "objectives": objectives,
+            "diagnostics": diagnostics_out,
+            "repeat_metrics": repeat_metrics,
+        }
+
+    def __call__(self, trial: optuna.Trial) -> Tuple[float, float, float, float]:
+        cfg = self.cfg
+        trial_seed = cfg.base_seed + 1009 * (trial.number + 1)
+        params = suggest_params(trial)
+        evaluation = self.evaluate_params(params, trial_seed=trial_seed)
+        diagnostics = dict(evaluation["diagnostics"])
+        objectives = dict(evaluation["objectives"])
         self._set_trial_attrs(trial, diagnostics)
         return (
-            float(persistence_score),
-            float(asynchrony_score),
-            float(regime_score),
-            float(balance_score),
+            float(objectives["persistence"]),
+            float(objectives["asynchrony"]),
+            float(objectives["regime"]),
+            float(objectives["transmitter_balance"]),
         )
+
+
+def week4_reference_params() -> Dict[str, float]:
+    return {
+        "g_AMPA_max": 943.8767019547389 * 0.5,
+        "g_NMDA_max": 1132.4613811288566 * 0.5,
+        "g_GABA_A_max": 477.1128477169971 * 2.0,
+        "g_GABA_B_max": 978.2386456218012 * 0.5,
+        "A_AMPA": 0.1965658831686625 * 0.1,
+        "A_NMDA": 0.011641539779921259 * 0.05,
+        "A_GABA_A": 0.00010575509751513417 * 10.0,
+        "A_GABA_B": 0.00010290509538049661,
+        "inhibitory_scale_g": 1.2984752590298583 * 60.0,
+        "external_amplitude": 2.44625509556019,
+        "recurrent_exc_lognorm_sigma": 1.643570,
+        "inhibitory_nmda_weight": 0.959685703507305 * 0.5,
+    }
+
+
+def week4_reference_config(n_repeats: int = 1, base_seed: int = 1234) -> SearchConfig:
+    return SearchConfig(
+        n_neurons=1000,
+        n_excit=800,
+        n_out=100,
+        excitatory_type="ss4",
+        inhibitory_type="b",
+        dt_ms=0.1,
+        ext_on_ms=500.0,
+        total_ms=2000.0,
+        external_rate_hz=0.45527031369449,
+        n_repeats=n_repeats,
+        delay_mean_exc_ms=10.0,
+        delay_std_exc_ms=5.0,
+        delay_mean_inh_ms=1.5,
+        delay_std_inh_ms=0.3,
+        base_seed=base_seed,
+    )
+
+
+def evaluate_parameter_set(
+    params: Dict[str, float],
+    cfg: SearchConfig | None = None,
+    trial_seed: int | None = None,
+) -> Dict[str, object]:
+    objective = SSAIMultiObjective(cfg or SearchConfig())
+    return objective.evaluate_params(params=params, trial_seed=trial_seed)
+
+
+def evaluate_week4_reference(
+    n_repeats: int = 1,
+    base_seed: int = 1234,
+    trial_seed: int | None = None,
+) -> Dict[str, object]:
+    cfg = week4_reference_config(n_repeats=n_repeats, base_seed=base_seed)
+    params = week4_reference_params()
+    seed = base_seed if trial_seed is None else int(trial_seed)
+    return evaluate_parameter_set(params=params, cfg=cfg, trial_seed=seed)
