@@ -30,13 +30,13 @@ PARAM_SPECS = [
     ("g_NMDA_max", 1.0, 1500.0, False),
     ("g_GABA_A_max", 1.0, 1500.0, False),
     ("g_GABA_B_max", 1.0, 1500.0, False),
-    ("A_AMPA", 0.0001, 0.1, False),
-    ("A_NMDA", 0.0001, 0.1, False),
-    ("A_GABA_A", 0.0001, 0.1, False),
-    ("A_GABA_B", 0.0001, 0.1, False),
+    ("A_AMPA", 0.0001, 0.05, True),
+    ("A_NMDA", 0.0001, 0.05, True),
+    ("A_GABA_A", 0.0001, 0.05, True),
+    ("A_GABA_B", 0.0001, 0.05, True),
     ("inhibitory_scale_g", 0.1, 1000.0, False),
     ("v_ext", 10.0, 200, False),
-    ("external_amplitude", 0.5, 50.0, False),
+    ("external_amplitude", 0.5, 20.0, False),
     ("recurrent_exc_lognorm_sigma", 0.1, 3.0, False),
     ("inhibitory_nmda_weight", 0.0, 1.0, False),
 ]
@@ -63,9 +63,12 @@ STD_SUMMARY_KEYS = (
     "rate_post_inh_Hz",
     "rate_late_exc_Hz",
     "rate_late_inh_Hz",
+    "participation_frac_mean_20ms",
+    "participation_frac_p95_20ms",
     "mean_voltage_post_mV",
-    "mean_voltage_post_exc_mV",
-    "mean_voltage_post_inh_mV",
+    "voltage_rest_var_post_exc_mV2",
+    "voltage_rest_var_post_inh_mV2",
+    "conductance_load_post",
     "balance_min_fraction",
     "balance_total_effective_strength",
     "conductance_mean_AMPA",
@@ -108,13 +111,26 @@ class SearchConfig:
     transmitter_balance_target_fraction: float = 0.25
     reject_rate_late_low_hz: float = 0.5
     reject_rate_late_exc_high_hz: float = 10.0
-    reject_rate_late_inh_high_hz: float = 50.0
+    reject_rate_late_inh_high_hz: float = 100.0
     reject_rate_late_extreme_low_hz: float = 0.05
     reject_rate_late_exc_extreme_high_hz: float = 20.0
-    reject_rate_late_inh_extreme_high_hz: float = 100.0
+    reject_rate_late_inh_extreme_high_hz: float = 200.0
     late_rate_low_penalty_weight: float = 4.0
     late_rate_exc_high_penalty_weight: float = 4.0
     late_rate_inh_high_penalty_weight: float = 4.0
+    regime_voltage_var_exc_scale_mV2: float = 100.0
+    regime_voltage_var_inh_scale_mV2: float = 100.0
+    regime_voltage_var_exc_weight: float = 1.5
+    regime_voltage_var_inh_weight: float = 1.0
+    regime_conductance_load_scale: float = 100.0
+    regime_conductance_load_weight: float = 0.2
+    asynchrony_participation_bin_ms: float = 20.0
+    asynchrony_participation_p95_threshold: float = 0.15
+    asynchrony_cv_weight: float = 1.25
+    asynchrony_fano_weight: float = 0.75
+    asynchrony_corr_weight: float = 1.5
+    asynchrony_peak_weight: float = 0.25
+    asynchrony_participation_weight: float = 4.0
     reject_objective_value: float = -100.0
     base_seed: int = 1234
 
@@ -287,13 +303,13 @@ class SSAIMultiObjective:
 
         post_stats = sim.stats.compute_metrics(
             cfg.dt_ms,
-            bin_ms_participation=300,
+            bin_ms_participation=cfg.asynchrony_participation_bin_ms,
             t_start_ms=cfg.ext_on_ms,
             t_stop_ms=cfg.total_ms,
         )
         late_stats = sim.stats.compute_metrics(
             cfg.dt_ms,
-            bin_ms_participation=300,
+            bin_ms_participation=cfg.asynchrony_participation_bin_ms,
             t_start_ms=max(cfg.ext_on_ms, cfg.total_ms - 300.0),
             t_stop_ms=cfg.total_ms,
         )
@@ -308,6 +324,9 @@ class SSAIMultiObjective:
         rate_post_inh = float(post_stats.get("rate_mean_Hz_I", 0.0))
         rate_late_exc = float(late_stats.get("rate_mean_Hz_E", 0.0))
         rate_late_inh = float(late_stats.get("rate_mean_Hz_I", 0.0))
+        participation_bin_ms = int(round(cfg.asynchrony_participation_bin_ms))
+        participation_mean = float(post_stats.get(f"participation_frac_mean_{participation_bin_ms}ms", 0.0))
+        participation_p95 = float(post_stats.get(f"participation_frac_p95_{participation_bin_ms}ms", 0.0))
 
         peak_ratio = _compute_peak_ratio(
             post_stats.get("pop_psd_freq_hz", np.array([])),
@@ -315,8 +334,8 @@ class SSAIMultiObjective:
         )
 
         v_mean = -60.0
-        v_mean_exc = -60.0
-        v_mean_inh = -55.0
+        v_rest_var_exc = 0.0
+        v_rest_var_inh = 0.0
         voltages = sim.stats.voltages()
         if voltages.size > 0:
             t_ms = sim.stats.times_ms(dt_ms=cfg.dt_ms)
@@ -327,9 +346,11 @@ class SSAIMultiObjective:
                 inhib_mask = np.asarray(sim.stats.inhibitory_mask, dtype=bool)
                 exc_mask = ~inhib_mask
                 if np.any(exc_mask):
-                    v_mean_exc = float(np.mean(voltages_post[exc_mask]))
+                    exc_dev = voltages_post[exc_mask] - (-60.0)
+                    v_rest_var_exc = float(np.mean(exc_dev * exc_dev))
                 if np.any(inhib_mask):
-                    v_mean_inh = float(np.mean(voltages_post[inhib_mask]))
+                    inh_dev = voltages_post[inhib_mask] - (-55.0)
+                    v_rest_var_inh = float(np.mean(inh_dev * inh_dev))
 
         s_cv = _safe_tanh(max(0.0, isi_cv_mean) / 2.0)
         s_fano = _safe_tanh(max(0.0, fano_300) / 4.0)
@@ -369,10 +390,12 @@ class SSAIMultiObjective:
             "rate_post_inh_Hz": rate_post_inh,
             "rate_late_exc_Hz": rate_late_exc,
             "rate_late_inh_Hz": rate_late_inh,
+            "participation_frac_mean_20ms": participation_mean,
+            "participation_frac_p95_20ms": participation_p95,
             "psd_peak_ratio": float(peak_ratio),
             "mean_voltage_post_mV": float(v_mean),
-            "mean_voltage_post_exc_mV": float(v_mean_exc),
-            "mean_voltage_post_inh_mV": float(v_mean_inh),
+            "voltage_rest_var_post_exc_mV2": float(v_rest_var_exc),
+            "voltage_rest_var_post_inh_mV2": float(v_rest_var_inh),
             "p_corr": float(p_corr),
             "p_peak": float(p_peak),
             "p_vhigh": float(p_vhigh),
@@ -382,8 +405,8 @@ class SSAIMultiObjective:
     def _score_persistence(self, diagnostics: Dict[str, float]) -> float:
         rate_post = float(diagnostics.get("rate_post_Hz", 0.0))
         rate_late = float(diagnostics.get("rate_late_Hz", 0.0))
-        persist_core = _safe_tanh(min(rate_post, rate_late) / 5.0)
-        late_support = _safe_tanh(rate_late / 5.0)
+        persist_core = _safe_tanh(min(rate_post, rate_late) / 2.0)
+        late_support = _safe_tanh(rate_late / 2.0)
         return float(0.7 * persist_core + 0.3 * late_support)
 
     def _score_asynchrony(self, diagnostics: Dict[str, float]) -> float:
@@ -391,21 +414,43 @@ class SSAIMultiObjective:
         fano_300 = float(diagnostics.get("Fano_median_300ms", 0.0))
         noise_corr_50 = float(diagnostics.get("mean_noise_corr_50ms", 0.0))
         peak_ratio = float(diagnostics.get("psd_peak_ratio", 0.0))
+        participation_p95_20 = float(diagnostics.get("participation_frac_p95_20ms", 0.0))
 
         s_cv = _safe_tanh(max(0.0, isi_cv_mean) / 2.0)
         s_fano = _safe_tanh(max(0.0, fano_300) / 4.0)
         p_corr = max(0.0, noise_corr_50 - 0.10)
         p_peak = max(0.0, peak_ratio - 10.0) / 10.0
+        p_participation = max(
+            0.0,
+            (participation_p95_20 - self.cfg.asynchrony_participation_p95_threshold)
+            / max(self.cfg.asynchrony_participation_p95_threshold, 1e-9),
+        )
 
-        return float(1.5 * s_cv + 1.0 * s_fano - 1.5 * p_corr - 1.0 * p_peak)
+        return float(
+            self.cfg.asynchrony_cv_weight * s_cv
+            + self.cfg.asynchrony_fano_weight * s_fano
+            - self.cfg.asynchrony_corr_weight * p_corr
+            - self.cfg.asynchrony_peak_weight * p_peak
+            - self.cfg.asynchrony_participation_weight * p_participation
+        )
 
-    def _score_regime(self, diagnostics: Dict[str, float]) -> float:
-        v_mean_exc = float(diagnostics.get("mean_voltage_post_exc_mV", -60.0))
-        v_mean_inh = float(diagnostics.get("mean_voltage_post_inh_mV", -55.0))
+    def _score_regime(self, diagnostics: Dict[str, float], conductance_means: Dict[str, float]) -> float:
+        v_var_exc = float(diagnostics.get("voltage_rest_var_post_exc_mV2", 0.0))
+        v_var_inh = float(diagnostics.get("voltage_rest_var_post_inh_mV2", 0.0))
+        conductance_load = float(sum(float(conductance_means.get(name, 0.0)) for name in TRANSMITTERS))
 
-        p_vhigh_exc = max(0.0, (v_mean_exc - (-60.0)) / 10.0)
-        p_vhigh_inh = max(0.0, (v_mean_inh - (-55.0)) / 10.0)
-        return float(1.0 - (1.5 * p_vhigh_exc + 1.0 * p_vhigh_inh))
+        p_var_exc = max(0.0, v_var_exc) / max(self.cfg.regime_voltage_var_exc_scale_mV2, 1e-9)
+        p_var_inh = max(0.0, v_var_inh) / max(self.cfg.regime_voltage_var_inh_scale_mV2, 1e-9)
+        p_cond = math.log1p(max(0.0, conductance_load) / max(self.cfg.regime_conductance_load_scale, 1e-9))
+
+        return float(
+            1.0
+            - (
+                self.cfg.regime_voltage_var_exc_weight * p_var_exc
+                + self.cfg.regime_voltage_var_inh_weight * p_var_inh
+                + self.cfg.regime_conductance_load_weight * p_cond
+            )
+        ) / 10.0
 
     def _hard_reject(self, diagnostics: Dict[str, float]) -> Tuple[bool, str]:
         rate_late = float(diagnostics.get("rate_late_Hz", 0.0))
@@ -627,7 +672,7 @@ class SSAIMultiObjective:
             else:
                 persistence_score = self._score_persistence(ssai_diagnostics)
                 asynchrony_score = self._score_asynchrony(ssai_diagnostics)
-                regime_score = self._score_regime(ssai_diagnostics)
+                regime_score = self._score_regime(ssai_diagnostics, conductance_means)
                 balance_score, balance_diagnostics = self._score_transmitter_balance(
                     params=params,
                     conductance_means=conductance_means,
@@ -646,6 +691,7 @@ class SSAIMultiObjective:
             metrics["score_balance"] = float(balance_score)
             metrics["hard_reject"] = float(1.0 if reject else 0.0)
             metrics["late_rate_soft_penalty"] = float(soft_penalty)
+            metrics["conductance_load_post"] = float(sum(conductance_means[name] for name in TRANSMITTERS))
             for name in TRANSMITTERS:
                 metrics[f"conductance_mean_{name}"] = float(conductance_means[name])
             metrics.update(balance_diagnostics)
