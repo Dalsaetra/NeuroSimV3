@@ -1,0 +1,25 @@
+# Dense random topology
+
+sweep2d --x-sweep inhibitory_strength:0.1:10:9:log:relative --y-sweep delay_scale:0.1:4.0:9:log:relative
+
+sweep2d --x-sweep delay_mean_exc_ms:0.1:10:9:log:relative --y-sweep delay_mean_inh_ms:0.5:100.0:9:log:relative --delay-std-frac-exc 0.3 --delay-std-frac-inh 0.3
+
+sweep2d --x-sweep ampa_strength:0.1:2:9:log:relative --y-sweep nmda_strength:0.1:2.0:9:log:relative
+
+sweep2d --x-sweep gabaa_strength:0.1:2:9:log:relative --y-sweep gabab_strength:0.1:2.0:9:log:relative
+
+sweep2d --x-sweep recurrent_exc_sigma:0.1:2:9:log:relative --y-sweep inhibitory_strength:0.1:10:9:log:relative
+
+# Realistic topology
+
+sweep2d --x-sweep inhibitory_strength:0.1:10:9:log:relative --y-sweep delay_scale:0.1:4.0:9:log:relative --topology spatial_ei
+
+sweep2d --x-sweep ampa_strength:0.1:2:9:log:relative --y-sweep nmda_strength:0.1:2.0:9:log:relative --topology spatial_ei 
+
+sweep2d --x-sweep gabaa_strength:0.1:2:9:log:relative --y-sweep gabab_strength:0.1:2.0:9:log:relative --topology spatial_ei
+
+sweep2d --x-sweep spatial_ei_lambda_E:0.1:5:9:log:relative --y-sweep spatial_ei_lambda_I:0.2:10:9:log:relative --topology spatial_ei
+
+sweep2d --x-sweep e_normalization:0.1:10.0:9:log:relative --y-sweep i_normalization:0.1:10.0:9:log:relative --topology spatial_ei
+
+sweep2d --x-sweep sigma_E:0.1:10:9:log:relative --y-sweep sigma_I:0.1:10:9:log:relative --topology spatial_ei

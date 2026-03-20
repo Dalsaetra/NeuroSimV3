@@ -2,6 +2,7 @@ import argparse
 import json
 import math
 import sys
+from dataclasses import fields
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -74,7 +75,9 @@ def _load_json(path: Path):
 def _search_config_from_run(run_dir: Path) -> SearchConfig:
     cfg_json = _load_json(run_dir / "config.json")
     cfg_dict = dict(cfg_json["search_config"])
-    return SearchConfig(**cfg_dict)
+    valid_keys = {field.name for field in fields(SearchConfig)}
+    filtered_cfg = {key: value for key, value in cfg_dict.items() if key in valid_keys}
+    return SearchConfig(**filtered_cfg)
 
 
 def _load_pareto_trials(run_dir: Path) -> List[Dict[str, object]]:
@@ -245,14 +248,30 @@ def _plot_embedding_map(
     plt.close(fig)
 
 
-def _representatives(X: np.ndarray, labels: np.ndarray, centroids: np.ndarray) -> Dict[int, int]:
+def _normalized_objective_sums(trials: Sequence[Dict[str, object]]) -> np.ndarray:
+    if not trials:
+        return np.zeros(0, dtype=float)
+    values = np.asarray([[float(v) for v in trial["values"]] for trial in trials], dtype=float)
+    mins = values.min(axis=0, keepdims=True)
+    maxs = values.max(axis=0, keepdims=True)
+    spans = maxs - mins
+    spans[spans < 1e-12] = 1.0
+    normalized = (values - mins) / spans
+    return normalized.sum(axis=1)
+
+
+def _representatives_by_objective_sum(
+    trials: Sequence[Dict[str, object]],
+    labels: np.ndarray,
+) -> Dict[int, int]:
     reps: Dict[int, int] = {}
-    for k in range(centroids.shape[0]):
-        idx = np.flatnonzero(labels == k)
+    objective_sums = _normalized_objective_sums(trials)
+    for cluster_id in sorted(set(int(x) for x in labels.tolist())):
+        idx = np.flatnonzero(labels == cluster_id)
         if idx.size == 0:
             continue
-        dists = np.linalg.norm(X[idx] - centroids[k], axis=1)
-        reps[k] = int(idx[np.argmin(dists)])
+        best_local = idx[np.argmax(objective_sums[idx])]
+        reps[cluster_id] = int(best_local)
     return reps
 
 
@@ -307,7 +326,7 @@ def _prepare_simulation(objective: SSAIMultiObjective, params: Dict[str, float],
 
     ext_amp_vec = np.full(cfg.n_neurons, float(params["external_amplitude"]), dtype=float)
     ext_amp_vec[pop.inhibitory_mask.astype(bool)] = 0.0
-    poisson = PoissonInput(cfg.n_neurons, rate=float(params["v_ext"]), amplitude=ext_amp_vec, rng=trial_rng)
+    poisson = PoissonInput(cfg.n_neurons, rate=float(cfg.external_rate_hz), amplitude=ext_amp_vec, rng=trial_rng)
 
     ext_on_steps = int(round(cfg.ext_on_ms / cfg.dt_ms))
     total_steps = int(round(cfg.total_ms / cfg.dt_ms))
@@ -326,10 +345,15 @@ def _choose_repeat_seed(trial: Dict[str, object], cfg: SearchConfig) -> int:
     best_seed = int(attrs.get("trial_seed", cfg.base_seed))
     best_score = None
     for idx in range(cfg.n_repeats):
-        score_key = f"repeat_{idx}_score_ssai"
         seed_key = f"repeat_{idx}_seed"
-        if score_key in attrs and seed_key in attrs:
-            score = float(attrs[score_key])
+        objective_keys = [
+            f"repeat_{idx}_score_persistence",
+            f"repeat_{idx}_score_asynchrony",
+            f"repeat_{idx}_score_regime",
+            f"repeat_{idx}_score_balance",
+        ]
+        if all(key in attrs for key in objective_keys) and seed_key in attrs:
+            score = float(sum(float(attrs[key]) for key in objective_keys))
             if best_score is None or score > best_score:
                 best_score = score
                 best_seed = int(attrs[seed_key])
@@ -413,6 +437,8 @@ def _analyzed_metrics(sim, t_start_ms: float, t_stop_ms: float | None) -> Dict[s
         "rate_mean_Hz_I": float(stats.get("rate_mean_Hz_I", 0.0)),
         "ISI_CV_mean_E": float(stats.get("ISI_CV_mean_E", 0.0)),
         "ISI_CV_mean_I": float(stats.get("ISI_CV_mean_I", 0.0)),
+        "mean_noise_corr_50ms": float(stats.get("mean_noise_corr_50ms", 0.0)),
+        "psd_peak_ratio": float(stats.get("psd_peak_ratio", 0.0)),
         "mean_voltage_mV_E": mean_voltage_exc,
         "mean_voltage_mV_I": mean_voltage_inh,
     }
@@ -434,6 +460,8 @@ def _print_metric_summary(family_label: str, metrics: Dict[str, float]) -> None:
         f"{family_label}: "
         f"rate_Hz(E={metrics.get('rate_mean_Hz_E', 0.0):.3f}, I={metrics.get('rate_mean_Hz_I', 0.0):.3f}) | "
         f"ISI_CV(E={metrics.get('ISI_CV_mean_E', 0.0):.3f}, I={metrics.get('ISI_CV_mean_I', 0.0):.3f}) | "
+        f"noise_corr_50ms={metrics.get('mean_noise_corr_50ms', 0.0):.3f} | "
+        f"psd_peak_ratio={metrics.get('psd_peak_ratio', 0.0):.3f} | "
         f"Vmean_mV(E={metrics.get('mean_voltage_mV_E', 0.0):.3f}, I={metrics.get('mean_voltage_mV_I', 0.0):.3f}) | "
         f"Fano " + ", ".join(fano_parts)
     )
@@ -524,6 +552,7 @@ def _plot_raster(sim, out_path: Path, t_start_ms: float, t_stop_ms: float | None
 
 
 def _cluster_summary(trials: Sequence[Dict[str, object]], labels: np.ndarray, reps: Dict[int, int]) -> Dict[str, object]:
+    objective_sums = _normalized_objective_sums(trials)
     out = {"n_families": int(len(reps)), "families": []}
     for cluster_id, rep_idx in sorted(reps.items()):
         member_idx = np.flatnonzero(labels == cluster_id)
@@ -534,6 +563,7 @@ def _cluster_summary(trials: Sequence[Dict[str, object]], labels: np.ndarray, re
                 "cluster_id": int(cluster_id),
                 "size": int(member_idx.size),
                 "representative_trial_number": int(rep_trial["number"]),
+                "representative_normalized_objective_sum": float(objective_sums[rep_idx]),
                 "representative_objectives": {name: values[i] for i, name in enumerate(OBJECTIVE_NAMES)},
                 "member_trial_numbers": [int(trials[i]["number"]) for i in member_idx],
             }
@@ -555,16 +585,13 @@ def main() -> None:
     all_trials = _load_pareto_trials(run_dir)
     if not all_trials:
         raise ValueError(f"No Pareto trials found in {run_dir}.")
-    trials = _filter_nonnegative_trials(all_trials)
-    if not trials:
-        raise ValueError(
-            f"No Pareto trials with all nonnegative objective values found in {run_dir}."
-        )
+    trials = list(all_trials)
+    nonnegative_trials = _filter_nonnegative_trials(all_trials)
 
     X_raw, feature_names = _extract_feature_matrix(trials, args.cluster_features)
     X = _standardize(X_raw)
     labels, centroids = _kmeans(X, args.n_clusters, seed=cfg.base_seed)
-    reps = _representatives(X, labels, centroids)
+    reps = _representatives_by_objective_sum(trials, labels)
     if args.embedding_method == "pca":
         embedding_coords, embedding_explained = _pca_2d(X)
     else:
@@ -572,7 +599,7 @@ def main() -> None:
 
     summary = _cluster_summary(trials, labels, reps)
     summary["n_trials_input"] = int(len(all_trials))
-    summary["n_trials_nonnegative"] = int(len(trials))
+    summary["n_trials_nonnegative"] = int(len(nonnegative_trials))
     summary["embedding_method"] = args.embedding_method
     with (out_dir / "cluster_summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, sort_keys=True)

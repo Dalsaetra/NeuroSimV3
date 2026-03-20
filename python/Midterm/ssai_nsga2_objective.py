@@ -55,6 +55,7 @@ STD_SUMMARY_KEYS = (
     "ISI_CV_mean",
     "Fano_median_300ms",
     "mean_noise_corr_50ms",
+    "psd_peak_ratio",
     "rate_post_Hz",
     "rate_late_Hz",
     "rate_post_exc_Hz",
@@ -126,6 +127,9 @@ class SearchConfig:
     asynchrony_cv_weight: float = 1.0
     asynchrony_fano_weight: float = 1.0
     asynchrony_corr_weight: float = 1.0
+    asynchrony_peak_ratio_threshold: float = 200.0
+    asynchrony_peak_ratio_scale: float = 200.0
+    asynchrony_peak_ratio_weight: float = 1.0
     reject_objective_value: float = -100.0
     base_seed: int = 1234
 
@@ -136,6 +140,24 @@ def config_to_dict(cfg: SearchConfig) -> Dict[str, object]:
 
 def _safe_tanh(x: float) -> float:
     return float(np.tanh(float(x)))
+
+
+def _compute_peak_ratio(freq_hz: np.ndarray, psd: np.ndarray) -> float:
+    if freq_hz is None or psd is None:
+        return 0.0
+    if len(freq_hz) == 0 or len(psd) == 0:
+        return 0.0
+
+    band_mask = (freq_hz >= 2.0) & (freq_hz <= 120.0)
+    if not np.any(band_mask):
+        return 0.0
+
+    band = psd[band_mask]
+    median = float(np.median(band))
+    if median <= 0:
+        return 0.0
+    peak = float(np.max(band))
+    return peak / (median + 1e-12)
 
 
 def _aggregate_repeat_metrics(repeat_metrics: Tuple[Dict[str, float], ...]) -> Dict[str, float]:
@@ -294,6 +316,10 @@ class SSAIMultiObjective:
         rate_post_inh = float(post_stats.get("rate_mean_Hz_I", 0.0))
         rate_late_exc = float(late_stats.get("rate_mean_Hz_E", 0.0))
         rate_late_inh = float(late_stats.get("rate_mean_Hz_I", 0.0))
+        peak_ratio = _compute_peak_ratio(
+            post_stats.get("pop_psd_freq_hz", np.array([])),
+            post_stats.get("pop_psd", np.array([])),
+        )
 
         v_mean = -60.0
         v_rest_var_exc = 0.0
@@ -328,6 +354,7 @@ class SSAIMultiObjective:
             "rate_post_inh_Hz": rate_post_inh,
             "rate_late_exc_Hz": rate_late_exc,
             "rate_late_inh_Hz": rate_late_inh,
+            "psd_peak_ratio": float(peak_ratio),
             "mean_voltage_post_mV": float(v_mean),
             "voltage_rest_var_post_exc_mV2": float(v_rest_var_exc),
             "voltage_rest_var_post_inh_mV2": float(v_rest_var_inh),
@@ -375,15 +402,21 @@ class SSAIMultiObjective:
         isi_cv_mean = float(diagnostics.get("ISI_CV_mean", 0.0))
         fano_300 = float(diagnostics.get("Fano_median_300ms", 0.0))
         noise_corr_50 = float(diagnostics.get("mean_noise_corr_50ms", 0.0))
+        peak_ratio = float(diagnostics.get("psd_peak_ratio", 0.0))
 
         s_cv = _safe_tanh(max(0.0, isi_cv_mean) / 2.0)
         s_fano = _safe_tanh(max(0.0, fano_300) / 2.0)
         p_corr = max(0.0, noise_corr_50 - 0.05) / 0.05
+        p_peak = max(0.0, peak_ratio - self.cfg.asynchrony_peak_ratio_threshold) / max(
+            self.cfg.asynchrony_peak_ratio_scale,
+            1e-9,
+        )
 
         return float(
             self.cfg.asynchrony_cv_weight * s_cv
             + self.cfg.asynchrony_fano_weight * s_fano
             - self.cfg.asynchrony_corr_weight * p_corr
+            - self.cfg.asynchrony_peak_ratio_weight * p_peak
         )
 
     def _score_regime(
