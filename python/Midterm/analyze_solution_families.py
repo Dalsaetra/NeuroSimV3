@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import math
 import sys
@@ -551,6 +552,135 @@ def _plot_raster(sim, out_path: Path, t_start_ms: float, t_stop_ms: float | None
     )
 
 
+def _raster_points(sim, t_start_ms: float, t_stop_ms: float | None) -> Tuple[np.ndarray, np.ndarray]:
+    spikes = sim.stats.spikes_bool()
+    times = np.asarray(sim.stats.ts, dtype=float)
+    if spikes.size == 0 or times.size == 0:
+        return np.zeros(0, dtype=float), np.zeros(0, dtype=int)
+    mask = _time_mask(times, t_start_ms, t_stop_ms)
+    if not np.any(mask):
+        return np.zeros(0, dtype=float), np.zeros(0, dtype=int)
+    spikes = spikes[:, mask]
+    times = times[mask]
+    neuron_idx, time_idx = np.nonzero(spikes)
+    return times[time_idx], neuron_idx
+
+
+def _plot_combined_family_rasters(
+    raster_panels: Sequence[Dict[str, object]],
+    out_path: Path,
+    t_start_ms: float,
+    t_stop_ms: float | None,
+) -> None:
+    if not raster_panels:
+        return
+    fig, axes = plt.subplots(len(raster_panels), 1, figsize=(12, max(3.0, 2.4 * len(raster_panels))), sharex=True)
+    if len(raster_panels) == 1:
+        axes = [axes]
+    for ax, panel in zip(axes, raster_panels):
+        spike_times = np.asarray(panel["spike_times_ms"], dtype=float)
+        neuron_idx = np.asarray(panel["neuron_indices"], dtype=int)
+        inhibitory_mask = np.asarray(panel["inhibitory_mask"], dtype=bool)
+        if spike_times.size > 0 and inhibitory_mask.size > 0:
+            spike_is_inhib = inhibitory_mask[neuron_idx]
+            exc_mask = ~spike_is_inhib
+            if np.any(exc_mask):
+                ax.scatter(
+                    spike_times[exc_mask],
+                    neuron_idx[exc_mask],
+                    s=2,
+                    c="tab:blue",
+                    alpha=0.75,
+                    linewidths=0,
+                    label="Excitatory",
+                )
+            if np.any(spike_is_inhib):
+                ax.scatter(
+                    spike_times[spike_is_inhib],
+                    neuron_idx[spike_is_inhib],
+                    s=2,
+                    c="tab:orange",
+                    alpha=0.75,
+                    linewidths=0,
+                    label="Inhibitory",
+                )
+        ax.set_ylabel(f"F{int(panel['cluster_id'])}\nNeuron")
+        ax.set_title(str(panel["title"]))
+        ax.grid(alpha=0.15)
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        axes[0].legend(loc="upper right", ncol=2)
+    axes[-1].set_xlabel("Time (ms)")
+    axes[-1].set_xlim(left=float(t_start_ms), right=float(t_stop_ms) if t_stop_ms is not None else None)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
+def _summary_stats(values: Sequence[float]) -> Dict[str, float]:
+    arr = np.asarray([float(v) for v in values if math.isfinite(float(v))], dtype=float)
+    if arr.size == 0:
+        return {
+            "min": float("nan"),
+            "max": float("nan"),
+            "span": float("nan"),
+            "mean": float("nan"),
+            "std": float("nan"),
+        }
+    return {
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr)),
+        "span": float(np.max(arr) - np.min(arr)),
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr, ddof=0)),
+    }
+
+
+def _family_summary_rows(
+    trials: Sequence[Dict[str, object]],
+    labels: np.ndarray,
+    member_metric_rows: Sequence[Dict[str, float]],
+) -> List[Dict[str, object]]:
+    trial_map = {int(trial["number"]): trial for trial in trials}
+    metrics_by_trial = {int(row["trial_number"]): row for row in member_metric_rows}
+    summary_rows: List[Dict[str, object]] = []
+    metric_names = (
+        "ISI_CV_mean_E",
+        "ISI_CV_mean_I",
+        "Fano_median_300ms_E",
+        "Fano_median_300ms_I",
+        "mean_noise_corr_50ms",
+        "rate_mean_Hz_E",
+        "rate_mean_Hz_I",
+        "psd_peak_ratio",
+    )
+
+    for cluster_id in sorted(set(int(x) for x in labels.tolist())):
+        member_idx = np.flatnonzero(labels == cluster_id)
+        member_trials = [trials[i] for i in member_idx]
+        row: Dict[str, object] = {
+            "cluster_id": int(cluster_id),
+            "n_members": int(len(member_trials)),
+        }
+        for name, _, _, _ in PARAM_SPECS:
+            stats = _summary_stats([float(trial["params"][name]) for trial in member_trials])
+            for stat_name, stat_value in stats.items():
+                row[f"param.{name}.{stat_name}"] = stat_value
+        for obj_idx, obj_name in enumerate(OBJECTIVE_NAMES):
+            stats = _summary_stats([float(trial["values"][obj_idx]) for trial in member_trials])
+            for stat_name, stat_value in stats.items():
+                row[f"objective.{obj_name}.{stat_name}"] = stat_value
+
+        member_metric_values = [metrics_by_trial[int(trial["number"])] for trial in member_trials if int(trial["number"]) in metrics_by_trial]
+        row["n_members_with_metrics"] = int(len(member_metric_values))
+        for metric_name in metric_names:
+            stats = _summary_stats([float(metric_row.get(metric_name, float("nan"))) for metric_row in member_metric_values])
+            for stat_name, stat_value in stats.items():
+                row[f"metric.{metric_name}.{stat_name}"] = stat_value
+        summary_rows.append(row)
+    return summary_rows
+
+
 def _cluster_summary(trials: Sequence[Dict[str, object]], labels: np.ndarray, reps: Dict[int, int]) -> Dict[str, object]:
     objective_sums = _normalized_objective_sums(trials)
     out = {"n_families": int(len(reps)), "families": []}
@@ -625,8 +755,6 @@ def main() -> None:
         row.update({f"param.{k}": v for k, v in trial["params"].items()})
         assignments.append(row)
 
-    import csv
-
     fieldnames = sorted({k for row in assignments for k in row.keys()})
     with (out_dir / "family_assignments.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -634,6 +762,40 @@ def main() -> None:
         writer.writerows(assignments)
 
     objective = SSAIMultiObjective(cfg)
+    representative_index_map = dict(reps)
+    member_metric_rows = []
+    for cluster_id in tqdm(sorted(set(int(x) for x in labels.tolist())), desc="Analyzing all family members", unit="family"):
+        member_idx = np.flatnonzero(labels == cluster_id)
+        for idx in member_idx:
+            trial = trials[int(idx)]
+            repeat_seed = _choose_repeat_seed(trial, cfg)
+            sim = _prepare_simulation(objective, trial["params"], repeat_seed=repeat_seed)
+            metric_t_start_ms = max(float(cfg.ext_on_ms), float(args.plot_start_ms))
+            metric_t_stop_ms = args.plot_stop_ms
+            analyzed_metrics = _analyzed_metrics(sim, metric_t_start_ms, metric_t_stop_ms)
+            row = {
+                "cluster_id": int(cluster_id),
+                "trial_number": int(trial["number"]),
+                "repeat_seed": int(repeat_seed),
+                "is_representative": int(int(idx) == int(representative_index_map.get(cluster_id, -1))),
+            }
+            row.update(analyzed_metrics)
+            member_metric_rows.append(row)
+
+    if member_metric_rows:
+        member_metric_fields = sorted({key for row in member_metric_rows for key in row.keys()})
+        with (out_dir / "family_member_metrics.csv").open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=member_metric_fields)
+            writer.writeheader()
+            writer.writerows(member_metric_rows)
+
+        family_summary_rows = _family_summary_rows(trials, labels, member_metric_rows)
+        family_summary_fields = sorted({key for row in family_summary_rows for key in row.keys()})
+        with (out_dir / "family_summary_statistics.csv").open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=family_summary_fields)
+            writer.writeheader()
+            writer.writerows(family_summary_rows)
+
     if args.trial_numbers:
         index_map = _trial_index_by_number(trials)
         missing = [trial_number for trial_number in args.trial_numbers if trial_number not in index_map]
@@ -646,6 +808,7 @@ def main() -> None:
             family_items = family_items[: args.max_families]
 
     analyzed_metric_rows = []
+    combined_raster_panels = []
     for cluster_id, rep_idx in tqdm(family_items, desc="Rendering representative families", unit="family"):
         trial = trials[rep_idx]
         repeat_seed = _choose_repeat_seed(trial, cfg)
@@ -694,15 +857,30 @@ def main() -> None:
         metric_row.update(analyzed_metrics)
         analyzed_metric_rows.append(metric_row)
         _print_metric_summary(f"family {cluster_id:02d} trial {int(trial['number'])}", analyzed_metrics)
+        spike_times_ms, neuron_idx = _raster_points(sim, args.plot_start_ms, args.plot_stop_ms)
+        combined_raster_panels.append(
+            {
+                "cluster_id": int(cluster_id),
+                "trial_number": int(trial["number"]),
+                "spike_times_ms": spike_times_ms,
+                "neuron_indices": neuron_idx,
+                "inhibitory_mask": np.asarray(sim.stats.inhibitory_mask, dtype=bool),
+                "title": f"Family {int(cluster_id)} | trial {int(trial['number'])}",
+            }
+        )
 
     if analyzed_metric_rows:
-        import csv
-
         metric_fields = sorted({key for row in analyzed_metric_rows for key in row.keys()})
         with (out_dir / "analyzed_trial_metrics.csv").open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=metric_fields)
             writer.writeheader()
             writer.writerows(analyzed_metric_rows)
+    _plot_combined_family_rasters(
+        combined_raster_panels,
+        out_dir / "representative_rasters_combined.png",
+        args.plot_start_ms,
+        args.plot_stop_ms,
+    )
 
     print(json.dumps(summary, indent=2, sort_keys=True))
 

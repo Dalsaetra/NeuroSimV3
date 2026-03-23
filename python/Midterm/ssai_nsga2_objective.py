@@ -99,10 +99,10 @@ class SearchConfig:
     total_ms: float = 3000.0
     external_rate_hz: float = 50.0
     n_repeats: int = 3
-    delay_mean_exc_ms: float = 1.5
-    delay_std_exc_ms: float = 0.3
+    delay_mean_exc_ms: float = 10.0
+    delay_std_exc_ms: float = 3.0
     delay_mean_inh_ms: float = 1.5
-    delay_std_inh_ms: float = 0.3
+    delay_std_inh_ms: float = 0.45
     recurrent_exc_mu: float = 0.0
     recurrent_exc_wmax: float = 100.0
     state_v_min: float = -100.0
