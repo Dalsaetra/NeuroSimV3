@@ -524,8 +524,9 @@ def _sample_kout_heavy_tailed(
 def _normalize_weights_total(
     G: nx.DiGraph,
     mode: str,
-    target: float | Mapping[int, float],
+    target: float | Mapping[int | str, float],
     *,
+    ntype_attr: str = "ntype",
     weight_attr: str = "weight",
 ):
     if mode not in ("in", "out"):
@@ -533,7 +534,10 @@ def _normalize_weights_total(
 
     def _target_for(node: int) -> float:
         if isinstance(target, Mapping):
-            return float(target.get(node, 0.0))
+            if node in target:
+                return float(target[node])
+            ntype = str(G.nodes[node].get(ntype_attr, ""))
+            return float(target.get(ntype, 0.0))
         return float(target)
 
     for node in G.nodes():
@@ -557,16 +561,20 @@ def _normalize_weights_total(
 def _normalize_out_weights_by_preclass(
     G: nx.DiGraph,
     *,
-    target_E: float | Mapping[int, float] | None,
-    target_I: float | Mapping[int, float] | None,
+    target_E: float | Mapping[int | str, float] | None,
+    target_I: float | Mapping[int | str, float] | None,
     inhib_attr: str = "inhibitory",
+    ntype_attr: str = "ntype",
     weight_attr: str = "weight",
 ):
     def _target_for(node: int, target_val):
         if target_val is None:
             return None
         if isinstance(target_val, Mapping):
-            return float(target_val.get(node, 0.0))
+            if node in target_val:
+                return float(target_val[node])
+            ntype = str(G.nodes[node].get(ntype_attr, ""))
+            return float(target_val.get(ntype, 0.0))
         return float(target_val)
 
     for node in G.nodes():
@@ -583,6 +591,42 @@ def _normalize_out_weights_by_preclass(
         scale = tgt / s
         for u, v in edges:
             G[u][v][weight_attr] = float(max(0.0, G[u][v].get(weight_attr, 0.0) * scale))
+
+
+def _normalize_in_weights_by_preclass(
+    G: nx.DiGraph,
+    *,
+    target_E: float | Mapping[int | str, float] | None,
+    target_I: float | Mapping[int | str, float] | None,
+    inhib_attr: str = "inhibitory",
+    ntype_attr: str = "ntype",
+    weight_attr: str = "weight",
+):
+    def _target_for(node: int, target_val):
+        if target_val is None:
+            return None
+        if isinstance(target_val, Mapping):
+            if node in target_val:
+                return float(target_val[node])
+            ntype = str(G.nodes[node].get(ntype_attr, ""))
+            return float(target_val.get(ntype, 0.0))
+        return float(target_val)
+
+    for node in G.nodes():
+        edge_groups = {
+            "E": [(u, node) for u in G.predecessors(node) if not bool(G.nodes[u].get(inhib_attr, False))],
+            "I": [(u, node) for u in G.predecessors(node) if bool(G.nodes[u].get(inhib_attr, False))],
+        }
+        for pre_class, edges in edge_groups.items():
+            tgt = _target_for(node, target_E if pre_class == "E" else target_I)
+            if tgt is None or tgt <= 0 or not edges:
+                continue
+            s = float(sum(max(0.0, G[u][v].get(weight_attr, 0.0)) for u, v in edges))
+            if s <= 0:
+                continue
+            scale = tgt / s
+            for u, v in edges:
+                G[u][v][weight_attr] = float(max(0.0, G[u][v].get(weight_attr, 0.0) * scale))
 
 
 def _assign_normal_weights_for_ntype(
@@ -662,9 +706,11 @@ def generate_spatial_ei_network(
     weight_clip: tuple[float, float] = (1e-4, 100.0),
     parallel_weight_mode: str = "sum_draws",
     normalize_mode: str | None = None,
-    normalize_target: float | Mapping[int, float] | None = None,
-    normalize_target_out_E: float | Mapping[int, float] | None = None,
-    normalize_target_out_I: float | Mapping[int, float] | None = None,
+    normalize_target: float | Mapping[int | str, float] | None = None,
+    normalize_target_in_E: float | Mapping[int | str, float] | None = None,
+    normalize_target_in_I: float | Mapping[int | str, float] | None = None,
+    normalize_target_out_E: float | Mapping[int | str, float] | None = None,
+    normalize_target_out_I: float | Mapping[int | str, float] | None = None,
     pos_attr: str = "pos",
     distance_attr: str = "distance",
     weight_attr: str = "weight",
@@ -687,8 +733,16 @@ def generate_spatial_ei_network(
       - "sum_draws": draw one weight per parallel connection, then sum those draws
     If `group_indices_by_ntype=True`, node IDs are relabeled so indices are
     grouped contiguously by `ntype` in `group_ntype_order` (or alphabetical).
-    For `normalize_mode="out"`, you can set separate targets with
-    `normalize_target_out_E` and `normalize_target_out_I`.
+     `normalize_target`, `normalize_target_in_E`, `normalize_target_in_I`,
+     `normalize_target_out_E`, and `normalize_target_out_I` can each be:
+       - a scalar target for all matching neurons
+       - a mapping keyed by node id
+       - a mapping keyed by `ntype`
+     For `normalize_mode="in"`, `normalize_target_in_E` and
+     `normalize_target_in_I` separately normalize incoming E and I pools per
+     postsynaptic neuron. For `normalize_mode="out"`, you can set separate
+     presynaptic E/I targets with `normalize_target_out_E` and
+     `normalize_target_out_I`.
 
     Node attributes:
       - inhibitory: bool
@@ -907,7 +961,19 @@ def generate_spatial_ei_network(
         G[u][v][weight_attr] = float(np.clip(w_eff, weight_clip[0], weight_clip[1]))
 
     if normalize_mode is not None:
-        if normalize_mode == "out" and (normalize_target_out_E is not None or normalize_target_out_I is not None):
+        if normalize_mode == "in" and (normalize_target_in_E is not None or normalize_target_in_I is not None):
+            default_target = 1.0 if normalize_target is None else normalize_target
+            target_E = normalize_target_in_E if normalize_target_in_E is not None else default_target
+            target_I = normalize_target_in_I if normalize_target_in_I is not None else default_target
+            _normalize_in_weights_by_preclass(
+                G,
+                target_E=target_E,
+                target_I=target_I,
+                inhib_attr="inhibitory",
+                ntype_attr="ntype",
+                weight_attr=weight_attr,
+            )
+        elif normalize_mode == "out" and (normalize_target_out_E is not None or normalize_target_out_I is not None):
             default_target = 1.0 if normalize_target is None else normalize_target
             target_E = normalize_target_out_E if normalize_target_out_E is not None else default_target
             target_I = normalize_target_out_I if normalize_target_out_I is not None else default_target
@@ -916,12 +982,19 @@ def generate_spatial_ei_network(
                 target_E=target_E,
                 target_I=target_I,
                 inhib_attr="inhibitory",
+                ntype_attr="ntype",
                 weight_attr=weight_attr,
             )
         else:
             if normalize_target is None:
                 normalize_target = 1.0
-            _normalize_weights_total(G, mode=normalize_mode, target=normalize_target, weight_attr=weight_attr)
+            _normalize_weights_total(
+                G,
+                mode=normalize_mode,
+                target=normalize_target,
+                ntype_attr="ntype",
+                weight_attr=weight_attr,
+            )
 
     return G
 
