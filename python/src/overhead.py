@@ -1,4 +1,5 @@
 import inspect
+from collections.abc import Mapping
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,6 +10,7 @@ from src.axonal_dynamics import AxonalDynamics
 from src.synapse_dynamics import SynapseDynamics, SynapseDynamics_Rise, SynapseDynamics_Uncapped
 from src.neuron_templates import neuron_type_IZ
 from src.input_integration import InputIntegration
+from src.normalization import build_firing_rate_normalizer
 from src.plasticity import STDP, STDPMasked, DA_BCM, ClopathMasked, T_STDP, PredictiveCoding, PredictiveCodingSaponati
 from src.utilities import bin_counts, power_spectrum_fft, spectral_entropy
 
@@ -70,7 +72,7 @@ class SimulationStats:
         self,
         dt_ms,
         bin_ms_fano=300.0,
-        refractory_ms=1.0,
+        refractory_ms=0.5,
         spectrum_from="population",   # "population" or "mean_neuron"
         pop_smooth_ms=0.0,
         bin_ms_participation=200.0,     # <--- NEW: window for activity sparsity
@@ -122,9 +124,14 @@ class SimulationStats:
             V = V[:, mask]
             if V.shape[1] > 0:
                 out["mean_voltage_mV"] = float(np.mean(V))
+                # Ignore the first 500 timesteps (50 ms at dt=0.1 ms) for min-voltage stats.
+                V_min = V[:, 500:] if V.shape[1] > 500 else V
+                out["min_voltage_mV"] = float(np.min(V_min))
                 if inhib_mask is not None:
                     out["mean_voltage_mV_E"] = float(np.mean(V[exc_mask])) if np.any(exc_mask) else np.nan
                     out["mean_voltage_mV_I"] = float(np.mean(V[inhib_mask])) if np.any(inhib_mask) else np.nan
+                    out["min_voltage_mV_E"] = float(np.min(V_min[exc_mask])) if np.any(exc_mask) else np.nan
+                    out["min_voltage_mV_I"] = float(np.min(V_min[inhib_mask])) if np.any(inhib_mask) else np.nan
 
         # --- firing rates (Hz) ---
         spike_counts_total = S.sum(axis=1)
@@ -155,7 +162,9 @@ class SimulationStats:
                     cvs[i] = isi.std(ddof=1) / m
                 # refractory violations
                 refrac_viol[i] = int((isi < refractory_ms).sum())
-        valid_cvs = np.isfinite(cvs) & active_mask
+        # ISI CV is only defined for neurons with at least 2 spikes in the analysis window.
+        cv_eligible_mask = spike_counts_total >= 2
+        valid_cvs = np.isfinite(cvs) & cv_eligible_mask
         out["ISI_CV_median"] = float(np.median(cvs[valid_cvs])) if np.any(valid_cvs) else 0.0
         out["ISI_CV_mean"] = float(np.mean(cvs[valid_cvs])) if np.any(valid_cvs) else 0.0
         if inhib_mask is not None:
@@ -364,7 +373,8 @@ class Simulation:
 
     def __init__(self, connectome: Connectome, dt, stepper_type="adapt", state0=None,
                  enable_plasticity=True, plasticity="stdp", plasticity_reward_type="online", plasticity_kwargs=None,
-                 synapse_type="standard", synapse_kwargs=None, enable_state_logger=True, enable_debug_logger=False):
+                 synapse_type="standard", synapse_kwargs=None, enable_state_logger=True, enable_debug_logger=False,
+                 rate_normalization=None):
         """
         Simulation class to represent the simulation of a neuron population.
         """
@@ -423,6 +433,15 @@ class Simulation:
             self.stats.ts.append(self.t_now)
         self.output_readout = None
         self.output_vector = None
+        self.rate_normalizer = None
+        if rate_normalization is not None:
+            if not isinstance(rate_normalization, Mapping):
+                raise ValueError("rate_normalization must be a mapping or None.")
+            self.rate_normalizer = build_firing_rate_normalizer(
+                self.connectome,
+                dt_ms=self.dt,
+                config=rate_normalization,
+            )
 
 
     def step(self, I_ext=None, spike_ext=None, reward=1.0):
@@ -484,6 +503,8 @@ class Simulation:
             self.stats.us.append(self.neuron_states.u.copy())
             self.stats.spikes.append(self.neuron_states.spike.copy())
             self.stats.ts.append(self.t_now)
+        if self.rate_normalizer is not None:
+            self.rate_normalizer.update(post_spikes)
         self._update_output_readout(post_spikes)
 
         if self.enable_debug_logger:
