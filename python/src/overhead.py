@@ -240,6 +240,16 @@ class SimulationStats:
         # --- global participation over full simulation ---
         total_active = (S.sum(axis=1) > 0).sum()
         out["participation_frac_total"] = float(total_active / float(N))
+        if inhib_mask is not None:
+            total_active_mask = S.sum(axis=1) > 0
+            out["participation_frac_total_E"] = (
+                float(total_active_mask[exc_mask].sum() / float(np.sum(exc_mask)))
+                if np.any(exc_mask) else np.nan
+            )
+            out["participation_frac_total_I"] = (
+                float(total_active_mask[inhib_mask].sum() / float(np.sum(inhib_mask)))
+                if np.any(inhib_mask) else np.nan
+            )
 
         # --- population rate & spectrum entropy ---
         pop_rate = S.sum(axis=0) / dt_s  # spikes/s across population
