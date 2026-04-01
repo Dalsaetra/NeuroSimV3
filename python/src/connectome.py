@@ -37,6 +37,24 @@ class Connectome:
         self.distances = np.ones((self.neuron_population.n_neurons, max_synapses), dtype=float)
 
         self.NC_invert = ~self.NC  # Inverted NC matrix for easier indexing
+        self._graph_weights_stale = False
+
+    def mark_graph_weights_stale(self):
+        self._graph_weights_stale = True
+
+    def sync_graph_weights(self):
+        if not hasattr(self, "G") or not isinstance(self.G, nx.DiGraph):
+            self._graph_weights_stale = False
+            return
+
+        valid = ~self.NC
+        n = self.neuron_population.n_neurons
+        for i in range(n):
+            for j in np.where(valid[i, :])[0]:
+                k = int(self.M[i, j])
+                if self.G.has_edge(i, k):
+                    self.G[i][k]["weight"] = float(self.W[i, j])
+        self._graph_weights_stale = False
 
     def normalize_weights_total(self, mode: str, target: float | Mapping[int, float]):
         """
@@ -90,12 +108,7 @@ class Connectome:
                 scale = tgt / s
                 self.W[edge_mask] = np.maximum(0.0, self.W[edge_mask] * scale)
 
-        if hasattr(self, "G") and isinstance(self.G, nx.DiGraph):
-            for i in range(n):
-                for j in np.where(valid[i, :])[0]:
-                    k = int(self.M[i, j])
-                    if self.G.has_edge(i, k):
-                        self.G[i][k]["weight"] = float(self.W[i, j])
+        self.sync_graph_weights()
 
     def normalize_out_weights_by_preclass(
         self,
@@ -139,12 +152,7 @@ class Connectome:
             scale = tgt / s
             self.W[node, edge_mask] = np.maximum(0.0, self.W[node, edge_mask] * scale)
 
-        if hasattr(self, "G") and isinstance(self.G, nx.DiGraph):
-            for i in range(n):
-                for j in np.where(valid[i, :])[0]:
-                    k = int(self.M[i, j])
-                    if self.G.has_edge(i, k):
-                        self.G[i][k]["weight"] = float(self.W[i, j])
+        self.sync_graph_weights()
 
 
     def build_from_probability(self, connectivity_probability, synapse_strengths=None):
@@ -170,6 +178,7 @@ class Connectome:
         self.build_nx()
 
         self.NC_invert = ~self.NC  # Inverted NC matrix for easier indexing
+        self._graph_weights_stale = False
 
     def set_connection(self, i, j, k, w = None):
         """
@@ -416,6 +425,7 @@ class Connectome:
             pop.set_neuron_params_from_type(idx, ntype)
 
         self.NC_invert = ~self.NC  # Inverted NC matrix for easier indexing
+        self._graph_weights_stale = False
 
 
     def build_nx(self, include_weights: bool = True, include_self_loops: bool = True):
@@ -464,6 +474,7 @@ class Connectome:
             G.add_edge(i, k, **attrs)
 
         self.G = G
+        self._graph_weights_stale = False
 
     def compute_metrics(self, small_world=True, weight_attr="weight", dist_attr="distance"):
         """
@@ -479,6 +490,8 @@ class Connectome:
 
         if not hasattr(self, 'G'):
             self.build_nx()
+        elif getattr(self, "_graph_weights_stale", False):
+            self.sync_graph_weights()
         G = self.G if isinstance(self.G, nx.DiGraph) else nx.DiGraph(self.G)
 
         out = {}
