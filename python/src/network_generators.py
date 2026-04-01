@@ -542,13 +542,15 @@ def _normalize_weights_total(
 
     for node in G.nodes():
         tgt = _target_for(node)
-        if tgt <= 0:
-            continue
         if mode == "in":
             edges = [(u, node) for u in G.predecessors(node)]
         else:
             edges = [(node, v) for v in G.successors(node)]
         if not edges:
+            continue
+        if tgt <= 0:
+            for u, v in edges:
+                G[u][v][weight_attr] = 0.0
             continue
         s = float(sum(max(0.0, G[u][v].get(weight_attr, 0.0)) for u, v in edges))
         if s <= 0:
@@ -580,10 +582,12 @@ def _normalize_out_weights_by_preclass(
     for node in G.nodes():
         is_inh = bool(G.nodes[node].get(inhib_attr, False))
         tgt = _target_for(node, target_I if is_inh else target_E)
-        if tgt is None or tgt <= 0:
-            continue
         edges = [(node, v) for v in G.successors(node)]
-        if not edges:
+        if tgt is None or not edges:
+            continue
+        if tgt <= 0:
+            for u, v in edges:
+                G[u][v][weight_attr] = 0.0
             continue
         s = float(sum(max(0.0, G[u][v].get(weight_attr, 0.0)) for u, v in edges))
         if s <= 0:
@@ -619,7 +623,11 @@ def _normalize_in_weights_by_preclass(
         }
         for pre_class, edges in edge_groups.items():
             tgt = _target_for(node, target_E if pre_class == "E" else target_I)
-            if tgt is None or tgt <= 0 or not edges:
+            if tgt is None or not edges:
+                continue
+            if tgt <= 0:
+                for u, v in edges:
+                    G[u][v][weight_attr] = 0.0
                 continue
             s = float(sum(max(0.0, G[u][v].get(weight_attr, 0.0)) for u, v in edges))
             if s <= 0:

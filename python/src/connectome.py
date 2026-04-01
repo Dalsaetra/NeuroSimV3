@@ -84,12 +84,13 @@ class Connectome:
 
         for node in range(n):
             tgt = _target_for(node)
-            if tgt <= 0:
-                continue
 
             if mode == "out":
                 edge_mask = valid[node, :]
                 if not np.any(edge_mask):
+                    continue
+                if tgt <= 0:
+                    self.W[node, edge_mask] = 0.0
                     continue
                 w = np.maximum(0.0, self.W[node, edge_mask])
                 s = float(np.sum(w))
@@ -100,6 +101,9 @@ class Connectome:
             else:
                 edge_mask = valid & (self.M == node)
                 if not np.any(edge_mask):
+                    continue
+                if tgt <= 0:
+                    self.W[edge_mask] = 0.0
                     continue
                 w = np.maximum(0.0, self.W[edge_mask])
                 s = float(np.sum(w))
@@ -137,11 +141,14 @@ class Connectome:
         for node in range(n):
             is_inh = bool(inhib_mask[node])
             tgt = _target_for(node, target_I if is_inh else target_E)
-            if tgt is None or tgt <= 0:
+            if tgt is None:
                 continue
 
             edge_mask = valid[node, :]
             if not np.any(edge_mask):
+                continue
+            if tgt <= 0:
+                self.W[node, edge_mask] = 0.0
                 continue
 
             w = np.maximum(0.0, self.W[node, edge_mask])
