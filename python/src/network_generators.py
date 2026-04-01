@@ -653,6 +653,175 @@ def _assign_normal_weights_for_ntype(
         data[weight_attr] = float(np.clip(w, w_min, w_max))
 
 
+def _assign_and_normalize_ei_weights(
+    G: nx.DiGraph,
+    *,
+    rng: np.random.Generator,
+    inhibitory_types: Sequence[str],
+    use_weight_distributor: bool = True,
+    mu_E: float = -2.0,
+    sigma_E: float = 1.0,
+    mu_I: float = -1.6,
+    sigma_I: float = 0.6,
+    weight_dist_by_ntype: Mapping[str, str] | None = None,
+    lognormal_by_ntype: Mapping[str, tuple[float, float]] | None = None,
+    weight_clip: tuple[float, float] = (1e-4, 100.0),
+    parallel_weight_mode: str = "sum_draws",
+    weight_pair_scale: Mapping[str, float] | None = None,
+    normalize_mode: str | None = None,
+    normalize_target: float | Mapping[int | str, float] | None = None,
+    normalize_target_in_E: float | Mapping[int | str, float] | None = None,
+    normalize_target_in_I: float | Mapping[int | str, float] | None = None,
+    normalize_target_out_E: float | Mapping[int | str, float] | None = None,
+    normalize_target_out_I: float | Mapping[int | str, float] | None = None,
+    inhib_attr: str = "inhibitory",
+    ntype_attr: str = "ntype",
+    weight_attr: str = "weight",
+    multiplicity_attr: str = "multiplicity",
+):
+    if parallel_weight_mode not in ("multiply", "sum_draws"):
+        raise ValueError("parallel_weight_mode must be 'multiply' or 'sum_draws'.")
+
+    inhibitory_types = set(str(t) for t in inhibitory_types)
+    w_pair_scale = {"EE": 1.0, "EI": 1.0, "IE": 1.0, "II": 1.0}
+    if weight_pair_scale is not None:
+        w_pair_scale.update({k: float(v) for k, v in weight_pair_scale.items()})
+
+    if use_weight_distributor:
+        assign_biological_weights(
+            G,
+            rng=rng,
+            mu_E=mu_E,
+            sigma_E=sigma_E,
+            mu_I=mu_I,
+            sigma_I=sigma_I,
+            use_distance=False,
+            w_min=float(weight_clip[0]),
+            w_max=float(weight_clip[1]),
+            weight_attr=weight_attr,
+        )
+    else:
+        for u, v in G.edges():
+            G[u][v][weight_attr] = 1.0
+
+    if lognormal_by_ntype or weight_dist_by_ntype:
+        override_types = set()
+        if lognormal_by_ntype:
+            override_types.update(str(k) for k in lognormal_by_ntype.keys())
+        if weight_dist_by_ntype:
+            override_types.update(str(k) for k in weight_dist_by_ntype.keys())
+
+        for ntype in override_types:
+            dist_name = "lognormal"
+            if weight_dist_by_ntype is not None:
+                dist_name = str(weight_dist_by_ntype.get(str(ntype), "lognormal")).lower()
+
+            if lognormal_by_ntype is not None and ntype in lognormal_by_ntype:
+                mu, sigma = lognormal_by_ntype[ntype]
+            else:
+                is_inh_type = str(ntype) in inhibitory_types
+                mu = mu_I if is_inh_type else mu_E
+                sigma = sigma_I if is_inh_type else sigma_E
+
+            if dist_name in ("lognormal", "log_norm", "log-normal"):
+                assign_lognormal_weights_for_ntype(
+                    G,
+                    ntype=str(ntype),
+                    mu=float(mu),
+                    sigma=float(sigma),
+                    w_min=float(weight_clip[0]),
+                    w_max=float(weight_clip[1]),
+                    rng=rng,
+                    ntype_attr=ntype_attr,
+                    weight_attr=weight_attr,
+                    apply_to="pre",
+                )
+            elif dist_name in ("normal", "gaussian", "gaussian_normal"):
+                _assign_normal_weights_for_ntype(
+                    G,
+                    ntype=str(ntype),
+                    mu=float(mu),
+                    sigma=float(sigma),
+                    w_min=float(weight_clip[0]),
+                    w_max=float(weight_clip[1]),
+                    rng=rng,
+                    ntype_attr=ntype_attr,
+                    weight_attr=weight_attr,
+                    apply_to="pre",
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported weight distribution '{dist_name}' for type '{ntype}'. "
+                    "Use 'lognormal' or 'normal'."
+                )
+
+    for u, v in G.edges():
+        pre_inh = bool(G.nodes[u].get(inhib_attr, False))
+        post_inh = bool(G.nodes[v].get(inhib_attr, False))
+        key = _pair_key(pre_inh, post_inh)
+        mult = int(max(1, G[u][v].get(multiplicity_attr, 1)))
+        scale = float(w_pair_scale.get(key, 1.0))
+        if parallel_weight_mode == "sum_draws" and mult > 1:
+            pre_ntype = str(G.nodes[u].get(ntype_attr, ""))
+            dist_name = "lognormal"
+            if weight_dist_by_ntype is not None:
+                dist_name = str(weight_dist_by_ntype.get(pre_ntype, "lognormal")).lower()
+            if lognormal_by_ntype is not None and pre_ntype in lognormal_by_ntype:
+                mu, sigma = lognormal_by_ntype[pre_ntype]
+            else:
+                mu = mu_I if pre_inh else mu_E
+                sigma = sigma_I if pre_inh else sigma_E
+
+            if dist_name in ("normal", "gaussian", "gaussian_normal"):
+                draws = rng.normal(loc=float(mu), scale=float(sigma), size=mult)
+            else:
+                draws = rng.lognormal(mean=float(mu), sigma=float(sigma), size=mult)
+            draws = np.clip(draws, weight_clip[0], weight_clip[1])
+            w_eff = float(np.sum(draws) * scale)
+        else:
+            w = float(G[u][v].get(weight_attr, 1.0))
+            w_eff = float(w * mult * scale)
+        G[u][v][weight_attr] = float(np.clip(w_eff, weight_clip[0], weight_clip[1]))
+
+    if normalize_mode is not None:
+        if normalize_mode == "in" and (normalize_target_in_E is not None or normalize_target_in_I is not None):
+            default_target = 1.0 if normalize_target is None else normalize_target
+            target_E = normalize_target_in_E if normalize_target_in_E is not None else default_target
+            target_I = normalize_target_in_I if normalize_target_in_I is not None else default_target
+            _normalize_in_weights_by_preclass(
+                G,
+                target_E=target_E,
+                target_I=target_I,
+                inhib_attr=inhib_attr,
+                ntype_attr=ntype_attr,
+                weight_attr=weight_attr,
+            )
+        elif normalize_mode == "out" and (normalize_target_out_E is not None or normalize_target_out_I is not None):
+            default_target = 1.0 if normalize_target is None else normalize_target
+            target_E = normalize_target_out_E if normalize_target_out_E is not None else default_target
+            target_I = normalize_target_out_I if normalize_target_out_I is not None else default_target
+            _normalize_out_weights_by_preclass(
+                G,
+                target_E=target_E,
+                target_I=target_I,
+                inhib_attr=inhib_attr,
+                ntype_attr=ntype_attr,
+                weight_attr=weight_attr,
+            )
+        else:
+            if normalize_target is None:
+                normalize_target = 1.0
+            _normalize_weights_total(
+                G,
+                mode=normalize_mode,
+                target=normalize_target,
+                ntype_attr=ntype_attr,
+                weight_attr=weight_attr,
+            )
+
+    return G
+
+
 def _reindex_graph_grouped_by_ntype(
     G: nx.DiGraph,
     *,
@@ -784,10 +953,6 @@ def generate_spatial_ei_network(
     if lambda_by_preclass is not None:
         lam.update({k: float(v) for k, v in lambda_by_preclass.items()})
 
-    w_pair_scale = {"EE": 1.0, "EI": 1.0, "IE": 1.0, "II": 1.0}
-    if weight_pair_scale is not None:
-        w_pair_scale.update({k: float(v) for k, v in weight_pair_scale.items()})
-
     coords = rng.random((n_neurons, space_dim))
     G = nx.DiGraph()
     for i in range(n_neurons):
@@ -859,144 +1024,148 @@ def generate_spatial_ei_network(
         if multiplicity_attr not in G[u][v]:
             G[u][v][multiplicity_attr] = 1
 
-    # Base lognormal draw from the shared weight distributor utility.
-    if use_weight_distributor:
-        assign_biological_weights(
-            G,
-            rng=rng,
-            mu_E=mu_E,
-            sigma_E=sigma_E,
-            mu_I=mu_I,
-            sigma_I=sigma_I,
-            use_distance=False,
-            w_min=float(weight_clip[0]),
-            w_max=float(weight_clip[1]),
-            weight_attr=weight_attr,
+    return _assign_and_normalize_ei_weights(
+        G,
+        rng=rng,
+        inhibitory_types=inhibitory_types,
+        use_weight_distributor=use_weight_distributor,
+        mu_E=mu_E,
+        sigma_E=sigma_E,
+        mu_I=mu_I,
+        sigma_I=sigma_I,
+        weight_dist_by_ntype=weight_dist_by_ntype,
+        lognormal_by_ntype=lognormal_by_ntype,
+        weight_clip=weight_clip,
+        parallel_weight_mode=parallel_weight_mode,
+        weight_pair_scale=weight_pair_scale,
+        normalize_mode=normalize_mode,
+        normalize_target=normalize_target,
+        normalize_target_in_E=normalize_target_in_E,
+        normalize_target_in_I=normalize_target_in_I,
+        normalize_target_out_E=normalize_target_out_E,
+        normalize_target_out_I=normalize_target_out_I,
+        weight_attr=weight_attr,
+        multiplicity_attr=multiplicity_attr,
+    )
+
+
+def generate_random_fixed_indegree_ei_network(
+    n_neurons: int = 1000,
+    *,
+    indegree: int = 100,
+    seed: int | None = None,
+    type_fractions: Mapping[str, float] | None = None,
+    inhibitory_types: Sequence[str] = ("b",),
+    layer: int = 0,
+    delay_mean_E: float = 10.0,
+    delay_std_E: float = 3.0,
+    delay_mean_I: float = 1.5,
+    delay_std_I: float = 0.45,
+    min_delay: float = 1e-3,
+    weight_pair_scale: Mapping[str, float] | None = None,
+    use_weight_distributor: bool = True,
+    mu_E: float = -2.0,
+    sigma_E: float = 1.0,
+    mu_I: float = -1.6,
+    sigma_I: float = 0.6,
+    weight_dist_by_ntype: Mapping[str, str] | None = None,
+    lognormal_by_ntype: Mapping[str, tuple[float, float]] | None = None,
+    weight_clip: tuple[float, float] = (1e-4, 100.0),
+    normalize_mode: str | None = None,
+    normalize_target: float | Mapping[int | str, float] | None = None,
+    normalize_target_in_E: float | Mapping[int | str, float] | None = None,
+    normalize_target_in_I: float | Mapping[int | str, float] | None = None,
+    normalize_target_out_E: float | Mapping[int | str, float] | None = None,
+    normalize_target_out_I: float | Mapping[int | str, float] | None = None,
+    distance_attr: str = "distance",
+    weight_attr: str = "weight",
+    multiplicity_attr: str = "multiplicity",
+):
+    """
+    Generate a random directed E/I network with exact fixed in-degree.
+
+    Each postsynaptic neuron samples `indegree` distinct presynaptic neurons
+    uniformly at random without self-loops. The edge `distance_attr` stores
+    synaptic delays so the graph remains compatible with existing simulation
+    code that reads delays from the `distance` field.
+
+    Weight assignment and optional in/out normalization reuse the same helper
+    path as `generate_spatial_ei_network`, including separate incoming E/I
+    normalization through `normalize_target_in_E` and `normalize_target_in_I`.
+    """
+    if n_neurons <= 0:
+        raise ValueError("n_neurons must be > 0.")
+    if indegree < 0:
+        raise ValueError("indegree must be >= 0.")
+    if indegree >= n_neurons:
+        raise ValueError("indegree must be < n_neurons when self-connections are disallowed.")
+    if min_delay <= 0:
+        raise ValueError("min_delay must be > 0.")
+
+    rng = np.random.default_rng(seed)
+
+    if type_fractions is None:
+        type_fractions = {"ss4": 0.8, "b": 0.2}
+    inhibitory_types = set(inhibitory_types)
+    ntype_counts = _largest_remainder_counts(n_neurons, type_fractions)
+
+    node_types = []
+    for ntype, count in ntype_counts.items():
+        node_types.extend([ntype] * int(count))
+    rng.shuffle(node_types)
+
+    G = nx.DiGraph()
+    for i in range(n_neurons):
+        ntype = str(node_types[i])
+        is_inh = ntype in inhibitory_types
+        G.add_node(
+            i,
+            inhibitory=bool(is_inh),
+            ntype=ntype,
+            layer=int(layer),
         )
-    else:
-        for u, v in G.edges():
-            G[u][v][weight_attr] = 1.0
 
-    # Optional per-ntype overrides for finer control:
-    # - choose distribution with weight_dist_by_ntype[ntype] in {"lognormal","normal"}.
-    # - choose (mu, sigma) with lognormal_by_ntype[ntype] (name kept for compatibility).
-    if lognormal_by_ntype or weight_dist_by_ntype:
-        override_types = set()
-        if lognormal_by_ntype:
-            override_types.update(str(k) for k in lognormal_by_ntype.keys())
-        if weight_dist_by_ntype:
-            override_types.update(str(k) for k in weight_dist_by_ntype.keys())
-
-        for ntype in override_types:
-            dist_name = "lognormal"
-            if weight_dist_by_ntype is not None:
-                dist_name = str(weight_dist_by_ntype.get(str(ntype), "lognormal")).lower()
-
-            if lognormal_by_ntype is not None and ntype in lognormal_by_ntype:
-                mu, sigma = lognormal_by_ntype[ntype]
-            else:
-                is_inh_type = str(ntype) in inhibitory_types
-                mu = mu_I if is_inh_type else mu_E
-                sigma = sigma_I if is_inh_type else sigma_E
-
-            if dist_name in ("lognormal", "log_norm", "log-normal"):
-                assign_lognormal_weights_for_ntype(
-                    G,
-                    ntype=str(ntype),
-                    mu=float(mu),
-                    sigma=float(sigma),
-                    w_min=float(weight_clip[0]),
-                    w_max=float(weight_clip[1]),
-                    rng=rng,
-                    ntype_attr="ntype",
-                    weight_attr=weight_attr,
-                    apply_to="pre",
-                )
-            elif dist_name in ("normal", "gaussian", "gaussian_normal"):
-                _assign_normal_weights_for_ntype(
-                    G,
-                    ntype=str(ntype),
-                    mu=float(mu),
-                    sigma=float(sigma),
-                    w_min=float(weight_clip[0]),
-                    w_max=float(weight_clip[1]),
-                    rng=rng,
-                    ntype_attr="ntype",
-                    weight_attr=weight_attr,
-                    apply_to="pre",
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported weight distribution '{dist_name}' for type '{ntype}'. "
-                    "Use 'lognormal' or 'normal'."
-                )
-
-    # Apply multiplicity and E/I pair scaling.
-    for u, v in G.edges():
-        pre_inh = bool(G.nodes[u]["inhibitory"])
-        post_inh = bool(G.nodes[v]["inhibitory"])
-        key = _pair_key(pre_inh, post_inh)
-        mult = int(max(1, G[u][v].get(multiplicity_attr, 1)))
-        scale = float(w_pair_scale.get(key, 1.0))
-        if parallel_weight_mode == "sum_draws" and mult > 1:
-            pre_ntype = str(G.nodes[u].get("ntype", ""))
-            dist_name = "lognormal"
-            if weight_dist_by_ntype is not None:
-                dist_name = str(weight_dist_by_ntype.get(pre_ntype, "lognormal")).lower()
-            if lognormal_by_ntype is not None and pre_ntype in lognormal_by_ntype:
-                mu, sigma = lognormal_by_ntype[pre_ntype]
-            else:
-                mu = mu_I if pre_inh else mu_E
-                sigma = sigma_I if pre_inh else sigma_E
-
-            if dist_name in ("normal", "gaussian", "gaussian_normal"):
-                draws = rng.normal(loc=float(mu), scale=float(sigma), size=mult)
-            else:
-                draws = rng.lognormal(mean=float(mu), sigma=float(sigma), size=mult)
-            draws = np.clip(draws, weight_clip[0], weight_clip[1])
-            w_eff = float(np.sum(draws) * scale)
-        else:
-            w = float(G[u][v].get(weight_attr, 1.0))
-            w_eff = float(w * mult * scale)
-        G[u][v][weight_attr] = float(np.clip(w_eff, weight_clip[0], weight_clip[1]))
-
-    if normalize_mode is not None:
-        if normalize_mode == "in" and (normalize_target_in_E is not None or normalize_target_in_I is not None):
-            default_target = 1.0 if normalize_target is None else normalize_target
-            target_E = normalize_target_in_E if normalize_target_in_E is not None else default_target
-            target_I = normalize_target_in_I if normalize_target_in_I is not None else default_target
-            _normalize_in_weights_by_preclass(
-                G,
-                target_E=target_E,
-                target_I=target_I,
-                inhib_attr="inhibitory",
-                ntype_attr="ntype",
-                weight_attr=weight_attr,
-            )
-        elif normalize_mode == "out" and (normalize_target_out_E is not None or normalize_target_out_I is not None):
-            default_target = 1.0 if normalize_target is None else normalize_target
-            target_E = normalize_target_out_E if normalize_target_out_E is not None else default_target
-            target_I = normalize_target_out_I if normalize_target_out_I is not None else default_target
-            _normalize_out_weights_by_preclass(
-                G,
-                target_E=target_E,
-                target_I=target_I,
-                inhib_attr="inhibitory",
-                ntype_attr="ntype",
-                weight_attr=weight_attr,
-            )
-        else:
-            if normalize_target is None:
-                normalize_target = 1.0
-            _normalize_weights_total(
-                G,
-                mode=normalize_mode,
-                target=normalize_target,
-                ntype_attr="ntype",
-                weight_attr=weight_attr,
+    all_nodes = np.arange(n_neurons, dtype=int)
+    for v in range(n_neurons):
+        candidates = np.concatenate((all_nodes[:v], all_nodes[v + 1 :]))
+        presyn = rng.choice(candidates, size=int(indegree), replace=False)
+        for u in presyn:
+            pre_inh = bool(G.nodes[int(u)]["inhibitory"])
+            delay_mean = delay_mean_I if pre_inh else delay_mean_E
+            delay_std = delay_std_I if pre_inh else delay_std_E
+            delay = max(float(min_delay), float(rng.normal(loc=delay_mean, scale=delay_std)))
+            G.add_edge(
+                int(u),
+                int(v),
+                **{
+                    distance_attr: delay,
+                    multiplicity_attr: 1,
+                },
             )
 
-    return G
+    return _assign_and_normalize_ei_weights(
+        G,
+        rng=rng,
+        inhibitory_types=inhibitory_types,
+        use_weight_distributor=use_weight_distributor,
+        mu_E=mu_E,
+        sigma_E=sigma_E,
+        mu_I=mu_I,
+        sigma_I=sigma_I,
+        weight_dist_by_ntype=weight_dist_by_ntype,
+        lognormal_by_ntype=lognormal_by_ntype,
+        weight_clip=weight_clip,
+        parallel_weight_mode="multiply",
+        weight_pair_scale=weight_pair_scale,
+        normalize_mode=normalize_mode,
+        normalize_target=normalize_target,
+        normalize_target_in_E=normalize_target_in_E,
+        normalize_target_in_I=normalize_target_in_I,
+        normalize_target_out_E=normalize_target_out_E,
+        normalize_target_out_I=normalize_target_out_I,
+        weight_attr=weight_attr,
+        multiplicity_attr=multiplicity_attr,
+    )
 
 
 def _counts_from_distribution(
