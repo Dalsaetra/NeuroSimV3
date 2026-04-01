@@ -464,14 +464,15 @@ class Simulation:
         self.neuron_states.step(I_syn, self.dt)
         post_spikes = self.neuron_states.spike # shape n_neurons x 1
         # Update the axonal dynamics
+        pre_spike_rows, pre_spike_cols = self.axonal_dynamics.check_sparse(self.t_now + self.dt)
+        pre_spikes = None
         if self.plasticity is not None and self.plasticity_step:
-            pre_spikes = self.axonal_dynamics.check(self.t_now + self.dt) # shape n_neurons x max_synapses
-            pre_spike_rows = None
-            pre_spike_cols = None
-            self.pre_spikes = pre_spikes.copy()  # Store only when plasticity uses it
+            if not hasattr(self.plasticity, "step_sparse"):
+                pre_spikes = self.axonal_dynamics.materialize_sparse(pre_spike_rows, pre_spike_cols)
+                self.pre_spikes = pre_spikes.copy()  # Store only when plasticity uses it
+            else:
+                self.pre_spikes = None
         else:
-            pre_spikes = None
-            pre_spike_rows, pre_spike_cols = self.axonal_dynamics.check_sparse(self.t_now + self.dt)
             self.pre_spikes = None
         # Push the spikes to the axonal dynamics, do it after the pre_spikes are checked,
         # as the spikes comes from the end of the current step
@@ -481,17 +482,28 @@ class Simulation:
         # Update the synapse weights based on the traces from last step
         if self.plasticity is not None and self.plasticity_step:
             if self.plasticity_step == "pre_post":
-                self.plasticity.step(pre_spikes, post_spikes, reward=reward)
+                if hasattr(self.plasticity, "step_sparse"):
+                    self.plasticity.step_sparse(pre_spike_rows, pre_spike_cols, post_spikes, reward=reward)
+                else:
+                    self.plasticity.step(pre_spikes, post_spikes, reward=reward)
             elif self.plasticity_step == "sparse_pre_post":
-                if hasattr(self.plasticity, "step_no_weight_changes"):
+                if hasattr(self.plasticity, "step_no_weight_changes_sparse"):
+                    self.plasticity.step_no_weight_changes_sparse(pre_spike_rows, pre_spike_cols, post_spikes, reward=reward)
+                elif hasattr(self.plasticity, "step_no_weight_changes"):
                     self.plasticity.step_no_weight_changes(pre_spikes, post_spikes, reward=reward)
                 else:
                     self.plasticity.decay_traces()
                     self.plasticity.spikes_in(pre_spikes, post_spikes)
             elif self.plasticity_step == "pre_post_v":
-                self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=reward)
+                if hasattr(self.plasticity, "step_sparse"):
+                    self.plasticity.step_sparse(pre_spike_rows, pre_spike_cols, post_spikes, self.neuron_states.V, reward=reward)
+                else:
+                    self.plasticity.step(pre_spikes, post_spikes, self.neuron_states.V, reward=reward)
             elif self.plasticity_step == "sparse_pre_post_v":
-                self.plasticity.step_no_weight_changes(pre_spikes, post_spikes, self.neuron_states.V, reward=reward)
+                if hasattr(self.plasticity, "step_no_weight_changes_sparse"):
+                    self.plasticity.step_no_weight_changes_sparse(pre_spike_rows, pre_spike_cols, post_spikes, self.neuron_states.V, reward=reward)
+                else:
+                    self.plasticity.step_no_weight_changes(pre_spikes, post_spikes, self.neuron_states.V, reward=reward)
             elif self.plasticity_step == "post_isyn":
                 self.plasticity.step(post_spikes, I_syn, reward=reward)
             elif callable(self.plasticity_step):
@@ -499,10 +511,7 @@ class Simulation:
             else:
                 raise ValueError(f"Unknown plasticity_step '{self.plasticity_step}'.")
         # Update synapse reaction class from the pre_spikes
-        if pre_spikes is not None:
-            self.synapse_dynamics.spike_input(pre_spikes)
-        else:
-            self.synapse_dynamics.spike_input_sparse(pre_spike_rows, pre_spike_cols)
+        self.synapse_dynamics.spike_input_sparse(pre_spike_rows, pre_spike_cols)
         if spike_ext is not None:
             self.synapse_dynamics.sensory_spike_input(spike_ext)
         # Update the current time

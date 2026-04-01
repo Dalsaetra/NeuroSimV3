@@ -94,9 +94,12 @@ class AxonalDynamics:
         return self._unpack_arrived_events(arrived)
 
     def check(self, t_now):
+        rows, cols = self.check_sparse(t_now)
+        return self.materialize_sparse(rows, cols)
+
+    def materialize_sparse(self, rows, cols):
         spikes = self._spike_buf
         spikes.fill(False)
-        rows, cols = self.check_sparse(t_now)
         if rows.size:
             spikes[rows, cols] = True
         return spikes

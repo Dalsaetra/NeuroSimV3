@@ -386,8 +386,8 @@ class ClopathMasked:
         self,
         connectome: Connectome,
         dt,
-        tau_x=30.0,
-        tau_v=20.0,
+        tau_x=20.0,
+        tau_v=10.0,
         A_plus=0.001*2,
         A_minus=0.0012*2,
         theta_plus=-45.0,
@@ -436,22 +436,64 @@ class ClopathMasked:
                     f"plastic_source_mask must be a 1D boolean array of length {n_neurons}."
                 )
         self.plastic_source_mask = plastic_source_mask
-        self.src_idx = np.flatnonzero(self.plastic_source_mask)
+        self.src_idx = np.flatnonzero(self.plastic_source_mask).astype(np.intp, copy=False)
 
-        # Pre-sliced connectivity for selected source rows.
+        # Store only valid plastic synapses to avoid dense masked work every step.
         self.M_sel = self.connectome.M[self.src_idx]
         self.NC_invert_sel = self.connectome.NC_invert[self.src_idx]
-        self.inhibitory_sel = self.connectome.neuron_population.inhibitory_mask[self.src_idx]
-        # If theta_plus and theta_minus are per-neuron, we need to slice them with M_sel
-        if np.ndim(self.theta_plus) == 1:
-            self.theta_plus = self.theta_plus[self.M_sel]
-        if np.ndim(self.theta_minus) == 1:
-            self.theta_minus = self.theta_minus[self.M_sel]
+        self.valid_src_local, self.valid_cols = np.nonzero(self.NC_invert_sel)
+        self.valid_src_local = self.valid_src_local.astype(np.intp, copy=False)
+        self.valid_cols = self.valid_cols.astype(np.intp, copy=False)
+        self.valid_src = self.src_idx[self.valid_src_local]
+        self.valid_post = self.M_sel[self.valid_src_local, self.valid_cols].astype(np.intp, copy=False)
+        self.inhibitory_valid = self.connectome.neuron_population.inhibitory_mask[self.valid_src]
+        self.weight_flat_idx = self.valid_src * self.connectome.max_synapses + self.valid_cols
+        self.n_valid = self.valid_post.size
+        self.supports_sparse_pre_spikes = True
+        self._synapse_lookup = np.full(
+            connectome.neuron_population.n_neurons * self.connectome.max_synapses,
+            -1,
+            dtype=np.int32,
+        )
+        self._synapse_lookup[self.weight_flat_idx] = np.arange(self.n_valid, dtype=np.int32)
 
-        # Per-synapse presynaptic trace for selected source rows.
-        self.pre_traces = np.zeros_like(self.M_sel, dtype=np.float32)
+        # If theta_plus and theta_minus are per-neuron, project them to valid synapses once.
+        self.theta_plus_syn = self._prepare_synapse_param(
+            self.theta_plus,
+            n_neurons,
+            self.M_sel.shape,
+            self.valid_src_local,
+            self.valid_cols,
+            self.valid_post,
+        )
+        self.theta_minus_syn = self._prepare_synapse_param(
+            self.theta_minus,
+            n_neurons,
+            self.M_sel.shape,
+            self.valid_src_local,
+            self.valid_cols,
+            self.valid_post,
+        )
+
+        # Per-synapse presynaptic trace for selected valid synapses only.
+        self.pre_traces = np.zeros(self.n_valid, dtype=np.float32)
         # Per-neuron low-pass membrane potential.
         self.v_bar = np.zeros(n_neurons, dtype=np.float32)
+        self.pre_trace_decay = np.float32(1.0 - (self.dt / self.tau_x))
+        self.pre_spike_scale = np.float32(self.dt)
+        self.v_bar_alpha = np.float32(self.dt / self.tau_v)
+        self.v_bar_decay = np.float32(1.0 - self.v_bar_alpha)
+        self.dw_scale = np.float32(self.dt * self.weight_update_scale)
+        self._W_flat = self.connectome.W.reshape(-1)
+        self._post_voltage = np.empty(self.n_valid, dtype=np.float32)
+        self._post_v_bar = np.empty(self.n_valid, dtype=np.float32)
+        self._gate_plus = np.empty(self.n_valid, dtype=np.float32)
+        self._gate_minus = np.empty(self.n_valid, dtype=np.float32)
+        self._dw = np.empty(self.n_valid, dtype=np.float32)
+        self._weight_buf = np.empty(self.n_valid, dtype=self.connectome.W.dtype)
+        if self.enable_debug_logger:
+            self._ltp_buf = np.empty(self.n_valid, dtype=np.float32)
+            self._ltd_buf = np.empty(self.n_valid, dtype=np.float32)
         self.debug_logger = {
             "mean_ltp": [],
             "mean_ltd": [],
@@ -464,82 +506,100 @@ class ClopathMasked:
         }
 
     @staticmethod
-    def _relu(x):
-        return np.maximum(x, 0.0)
+    def _as_voltage_vector(Vs):
+        return np.asarray(Vs, dtype=np.float32).reshape(-1)
+
+    @staticmethod
+    def _prepare_synapse_param(param, n_neurons, synapse_shape, valid_rows, valid_cols, valid_post):
+        param_arr = np.asarray(param)
+        if param_arr.ndim == 0:
+            return np.float32(param_arr)
+        if param_arr.ndim == 1:
+            if param_arr.shape[0] != n_neurons:
+                raise ValueError(
+                    f"Per-neuron threshold arrays must have length {n_neurons}."
+                )
+            return np.asarray(param_arr[valid_post], dtype=np.float32)
+        param_full = np.broadcast_to(param_arr, synapse_shape)
+        return np.asarray(param_full[valid_rows, valid_cols], dtype=np.float32)
 
     def _update_pre_trace(self, pre_spikes):
-        if self.src_idx.size == 0:
+        if self.n_valid == 0:
             return
-        pre_sel = np.asarray(pre_spikes[self.src_idx], dtype=np.float32)
-        self.pre_traces += self.dt * (-self.pre_traces / self.tau_x + pre_sel)
-        self.pre_traces[~self.NC_invert_sel] = 0.0
+        self.pre_traces *= self.pre_trace_decay
+        self.pre_traces += self.pre_spike_scale * pre_spikes[self.valid_src, self.valid_cols]
 
-    def _update_voltage_trace(self, Vs):
-        V = np.asarray(Vs, dtype=np.float32).reshape(-1)
+    def _update_pre_trace_sparse(self, pre_spike_rows, pre_spike_cols):
+        if self.n_valid == 0:
+            return
+        self.pre_traces *= self.pre_trace_decay
+        if pre_spike_rows.size == 0:
+            return
+        flat_idx = (
+            pre_spike_rows.astype(np.intp, copy=False) * self.connectome.max_synapses
+            + pre_spike_cols.astype(np.intp, copy=False)
+        )
+        trace_idx = self._synapse_lookup[flat_idx]
+        valid = trace_idx >= 0
+        if np.any(valid):
+            self.pre_traces[trace_idx[valid]] += self.pre_spike_scale
+
+    def _update_voltage_trace(self, V):
         # Low-pass filter with steady state equal to V.
-        self.v_bar += self.dt * ((V - self.v_bar) / self.tau_v)
+        self.v_bar += self.v_bar_alpha * (V - self.v_bar)
 
     def decay_traces(self):
-        if self.src_idx.size > 0:
-            self.pre_traces += self.dt * (-self.pre_traces / self.tau_x)
-            self.pre_traces[~self.NC_invert_sel] = 0.0
-        self.v_bar += self.dt * (-self.v_bar / self.tau_v)
+        if self.n_valid > 0:
+            self.pre_traces *= self.pre_trace_decay
+        self.v_bar *= self.v_bar_decay
 
     def spikes_in(self, pre_spikes, post_spikes=None, Vs=None):
         self._update_pre_trace(pre_spikes)
         if Vs is not None:
-            self._update_voltage_trace(Vs)
+            self._update_voltage_trace(self._as_voltage_vector(Vs))
 
     def apply_weight_changes(self, Vs, reward=1):
-        if self.src_idx.size == 0:
+        if self.n_valid == 0:
             if self.enable_debug_logger:
                 self._log_debug(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             return
 
-        V = np.asarray(Vs, dtype=np.float32).reshape(-1)
-        V_post = V[self.M_sel]
-        V_bar_post = self.v_bar[self.M_sel]
+        V = self._as_voltage_vector(Vs)
+        np.take(V, self.valid_post, out=self._post_voltage)
+        np.take(self.v_bar, self.valid_post, out=self._post_v_bar)
 
-        ltp = (
-            self.A_plus
-            * self.pre_traces
-            * self._relu(V_post - self.theta_plus)
-            * self._relu(V_bar_post - self.theta_minus)
-        )
-        ltd = self.A_minus * self.pre_traces * self._relu(V_bar_post - self.theta_minus)
-        dw = reward * self.dt * (ltp - ltd)
+        np.subtract(self._post_voltage, self.theta_plus_syn, out=self._gate_plus)
+        np.maximum(self._gate_plus, 0.0, out=self._gate_plus)
+        np.subtract(self._post_v_bar, self.theta_minus_syn, out=self._gate_minus)
+        np.maximum(self._gate_minus, 0.0, out=self._gate_minus)
 
-        W_sel = self.connectome.W[self.src_idx]
+        np.copyto(self._dw, self._gate_plus)
+        self._dw *= self.A_plus
+        self._dw -= self.A_minus
+        self._dw *= self.pre_traces
+        self._dw *= self._gate_minus
+
+        np.take(self._W_flat, self.weight_flat_idx, out=self._weight_buf)
         if self.weight_multiplicity is not None:
-            weight_mult = _get_weight_multiplier(W_sel, self.weight_multiplicity, self.max_weight)
-            dw = dw * weight_mult
-        dw = dw * self.weight_update_scale
-        dw[self.inhibitory_sel] *= self.gaba_factor
-        dw[~self.NC_invert_sel] = 0.0
+            weight_mult = _get_weight_multiplier(self._weight_buf, self.weight_multiplicity, self.max_weight)
+            self._dw *= weight_mult
+        self._dw *= (reward * self.dw_scale)
+        self._dw[self.inhibitory_valid] *= self.gaba_factor
 
         if self.enable_debug_logger:
-            valid = self.NC_invert_sel
-            ltp_gate = (V_post > self.theta_plus) & (V_bar_post > self.theta_minus) & valid
-            ltd_gate = (V_bar_post > self.theta_minus) & valid
-            valid_count = np.count_nonzero(valid)
-            if valid_count > 0:
-                active_synapse_frac = np.mean(np.abs(dw[valid]) > 0.0)
-                mean_ltp = float(np.mean(ltp[valid]))
-                mean_ltd = float(np.mean(ltd[valid]))
-                mean_dw = float(np.mean(dw[valid]))
-                active_ltp_gate_frac = float(np.mean(ltp_gate[valid]))
-                active_ltd_gate_frac = float(np.mean(ltd_gate[valid]))
-                mean_pre_trace = float(np.mean(self.pre_traces[valid]))
-                mean_v_bar_post = float(np.mean(V_bar_post[valid]))
-            else:
-                active_synapse_frac = 0.0
-                mean_ltp = 0.0
-                mean_ltd = 0.0
-                mean_dw = 0.0
-                active_ltp_gate_frac = 0.0
-                active_ltd_gate_frac = 0.0
-                mean_pre_trace = 0.0
-                mean_v_bar_post = 0.0
+            np.multiply(self.pre_traces, self._gate_minus, out=self._ltd_buf)
+            np.copyto(self._ltp_buf, self._ltd_buf)
+            self._ltp_buf *= self._gate_plus
+            self._ltp_buf *= self.A_plus
+            self._ltd_buf *= self.A_minus
+            active_synapse_frac = float(np.mean(np.abs(self._dw) > 0.0))
+            mean_ltp = float(np.mean(self._ltp_buf))
+            mean_ltd = float(np.mean(self._ltd_buf))
+            mean_dw = float(np.mean(self._dw))
+            active_ltp_gate_frac = float(np.mean((self._gate_plus > 0.0) & (self._gate_minus > 0.0)))
+            active_ltd_gate_frac = float(np.mean(self._gate_minus > 0.0))
+            mean_pre_trace = float(np.mean(self.pre_traces))
+            mean_v_bar_post = float(np.mean(self._post_v_bar))
             self._log_debug(
                 mean_ltp,
                 mean_ltd,
@@ -551,25 +611,39 @@ class ClopathMasked:
                 mean_v_bar_post,
             )
 
-        W_sel = W_sel + dw
+        self._weight_buf += self._dw
         if self.max_weight is not None:
-            np.clip(W_sel, self.min_weight, self.max_weight, out=W_sel)
+            np.clip(self._weight_buf, self.min_weight, self.max_weight, out=self._weight_buf)
         else:
-            np.maximum(W_sel, self.min_weight, out=W_sel)
-        self.connectome.W[self.src_idx] = W_sel
+            np.maximum(self._weight_buf, self.min_weight, out=self._weight_buf)
+        self._W_flat[self.weight_flat_idx] = self._weight_buf
 
     def step(self, pre_spikes, post_spikes, Vs, reward=1):
+        V = self._as_voltage_vector(Vs)
         self._update_pre_trace(pre_spikes)
-        self._update_voltage_trace(Vs)
-        self.apply_weight_changes(Vs, reward=reward)
+        self._update_voltage_trace(V)
+        self.apply_weight_changes(V, reward=reward)
+
+    def step_sparse(self, pre_spike_rows, pre_spike_cols, post_spikes, Vs, reward=1):
+        V = self._as_voltage_vector(Vs)
+        self._update_pre_trace_sparse(pre_spike_rows, pre_spike_cols)
+        self._update_voltage_trace(V)
+        self.apply_weight_changes(V, reward=reward)
 
     def step_no_weight_changes(self, pre_spikes, post_spikes, Vs=None, reward=1):
         self._update_pre_trace(pre_spikes)
         if Vs is not None:
-            self._update_voltage_trace(Vs)
+            self._update_voltage_trace(self._as_voltage_vector(Vs))
         else:
             # If V is not provided, decay toward 0 as a neutral fallback.
-            self.v_bar += self.dt * (-self.v_bar / self.tau_v)
+            self.v_bar *= self.v_bar_decay
+
+    def step_no_weight_changes_sparse(self, pre_spike_rows, pre_spike_cols, post_spikes, Vs=None, reward=1):
+        self._update_pre_trace_sparse(pre_spike_rows, pre_spike_cols)
+        if Vs is not None:
+            self._update_voltage_trace(self._as_voltage_vector(Vs))
+        else:
+            self.v_bar *= self.v_bar_decay
 
     def reset_traces(self):
         self.pre_traces.fill(0)
