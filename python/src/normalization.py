@@ -186,6 +186,112 @@ class FiringRateHomeostaticNormalizer:
         self.connectome.mark_graph_weights_stale()
 
 
+class PeriodicIncomingWeightNormalizer:
+    """
+    Periodically renormalize incoming excitatory and inhibitory weight pools
+    toward target sums per postsynaptic neuron.
+
+    Let s be the current incoming weight sum for a pool and t the desired
+    target. The pool is scaled by:
+
+      (t / s) ** normalization_exponent
+
+    `normalization_exponent=1.0` gives full normalization. Values in (0, 1)
+    partially draw weights toward the target without fully enforcing it.
+    """
+
+    def __init__(
+        self,
+        connectome: Connectome,
+        *,
+        dt_ms: float,
+        target_in_E: float | Mapping[int | str, float] | None,
+        target_in_I: float | Mapping[int | str, float] | None,
+        apply_every_ms: float,
+        normalization_exponent: float = 1.0,
+    ):
+        if dt_ms <= 0:
+            raise ValueError("dt_ms must be > 0.")
+        if apply_every_ms <= 0:
+            raise ValueError("apply_every_ms must be > 0.")
+        if target_in_E is None and target_in_I is None:
+            raise ValueError("At least one of target_in_E or target_in_I must be provided.")
+        if normalization_exponent <= 0 or normalization_exponent > 1.0:
+            raise ValueError("normalization_exponent must be in the interval (0, 1].")
+
+        self.connectome = connectome
+        self.dt_ms = float(dt_ms)
+        self.n_neurons = connectome.neuron_population.n_neurons
+        self.target_in_E = None if target_in_E is None else _resolve_target_array(connectome, target_in_E)
+        self.target_in_I = None if target_in_I is None else _resolve_target_array(connectome, target_in_I)
+        self.apply_every_steps = max(1, int(round(float(apply_every_ms) / self.dt_ms)))
+        self.normalization_exponent = float(normalization_exponent)
+        self.step_count = 0
+
+        self._build_incoming_index_cache()
+
+    def _build_incoming_index_cache(self):
+        valid_rows, valid_cols = np.where(~self.connectome.NC)
+        posts = self.connectome.M[valid_rows, valid_cols]
+        src_is_inh = np.asarray(self.connectome.neuron_population.inhibitory_mask, dtype=bool)[valid_rows]
+
+        self.incoming_exc_rows: list[np.ndarray] = []
+        self.incoming_exc_cols: list[np.ndarray] = []
+        self.incoming_inh_rows: list[np.ndarray] = []
+        self.incoming_inh_cols: list[np.ndarray] = []
+
+        for node in range(self.n_neurons):
+            post_mask = posts == node
+            exc_mask = post_mask & (~src_is_inh)
+            inh_mask = post_mask & src_is_inh
+            self.incoming_exc_rows.append(valid_rows[exc_mask])
+            self.incoming_exc_cols.append(valid_cols[exc_mask])
+            self.incoming_inh_rows.append(valid_rows[inh_mask])
+            self.incoming_inh_cols.append(valid_cols[inh_mask])
+
+    def reset(self):
+        self.step_count = 0
+
+    def update(self) -> bool:
+        self.step_count += 1
+        if self.step_count % self.apply_every_steps != 0:
+            return False
+        self.apply()
+        return True
+
+    def apply(self):
+        W = self.connectome.W
+
+        for node in range(self.n_neurons):
+            if self.target_in_E is not None:
+                exc_rows = self.incoming_exc_rows[node]
+                if exc_rows.size > 0:
+                    exc_cols = self.incoming_exc_cols[node]
+                    exc_weights = np.maximum(0.0, W[exc_rows, exc_cols])
+                    exc_sum = float(np.sum(exc_weights))
+                    target_exc = float(self.target_in_E[node])
+                    if target_exc <= 0.0:
+                        W[exc_rows, exc_cols] = 0.0
+                    elif exc_sum > 0.0:
+                        scale = (target_exc / exc_sum) ** self.normalization_exponent
+                        W[exc_rows, exc_cols] *= scale
+
+            if self.target_in_I is not None:
+                inh_rows = self.incoming_inh_rows[node]
+                if inh_rows.size > 0:
+                    inh_cols = self.incoming_inh_cols[node]
+                    inh_weights = np.maximum(0.0, W[inh_rows, inh_cols])
+                    inh_sum = float(np.sum(inh_weights))
+                    target_inh = float(self.target_in_I[node])
+                    if target_inh <= 0.0:
+                        W[inh_rows, inh_cols] = 0.0
+                    elif inh_sum > 0.0:
+                        scale = (target_inh / inh_sum) ** self.normalization_exponent
+                        W[inh_rows, inh_cols] *= scale
+
+        self.connectome.mark_graph_weights_stale()
+
+
 def build_firing_rate_normalizer(
     connectome: Connectome,
     *,
@@ -204,4 +310,20 @@ def build_firing_rate_normalizer(
         apply_every_ms=config.get("apply_every_ms"),
         min_weight=config.get("min_weight", 0.0),
         max_weight=config.get("max_weight"),
+    )
+
+
+def build_periodic_in_weight_normalizer(
+    connectome: Connectome,
+    *,
+    dt_ms: float,
+    config: Mapping,
+) -> PeriodicIncomingWeightNormalizer:
+    return PeriodicIncomingWeightNormalizer(
+        connectome,
+        dt_ms=dt_ms,
+        target_in_E=config.get("target_in_E"),
+        target_in_I=config.get("target_in_I"),
+        apply_every_ms=config["apply_every_ms"],
+        normalization_exponent=config.get("normalization_exponent", 1.0),
     )
