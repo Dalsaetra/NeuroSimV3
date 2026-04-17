@@ -81,13 +81,14 @@ class SimulationStats:
     ):
         """
         Returns a dict with:
-          - rate_mean_Hz / rate_median_Hz / rate_p95_Hz
+          - rate_mean_Hz / rate_std_Hz / rate_median_Hz / rate_p95_Hz
           - mean_voltage_mV / mean_voltage_mV_E / mean_voltage_mV_I
           - ISI_CV_median (want around 1)
           - refractory_violations_per_neuron (want 0)
           - Fano_median (bin_ms) (want around 1)
           - mean_noise_corr (bin_ms) (want 0-0.1)
           - pop_spec_entropy (higher is richer spectrum)
+          - psd_peak_freq_hz / psd_peak_amplitude / psd_peak_ratio (dominant oscillation in 2-120 Hz band)
           - participation_frac_mean_(bin_ms) / participation_frac_median_(bin_ms) / participation_frac_p95_(bin_ms)
         """
         out = {}
@@ -137,16 +138,23 @@ class SimulationStats:
         spike_counts_total = S.sum(axis=1)
         rates = spike_counts_total / (T_ms / 1000.0)
         out["rate_mean_Hz"] = float(np.nanmean(rates))
+        out["rate_std_Hz"] = float(np.nanstd(rates))
         out["rate_median_Hz"] = float(np.nanmedian(rates))
         out["rate_p95_Hz"] = float(np.nanpercentile(rates, 95))
         active2_mask = spike_counts_total >= 2
+        out["rate_mean_Hz_active2spk"] = float(np.nanmean(rates[active2_mask])) if np.any(active2_mask) else 0.0
+        out["rate_std_Hz_active2spk"] = float(np.nanstd(rates[active2_mask])) if np.any(active2_mask) else 0.0
         if inhib_mask is not None:
             out["rate_mean_Hz_E"] = float(np.nanmean(rates[exc_mask])) if np.any(exc_mask) else 0.0
+            out["rate_std_Hz_E"] = float(np.nanstd(rates[exc_mask])) if np.any(exc_mask) else 0.0
             out["rate_mean_Hz_I"] = float(np.nanmean(rates[inhib_mask])) if np.any(inhib_mask) else 0.0
+            out["rate_std_Hz_I"] = float(np.nanstd(rates[inhib_mask])) if np.any(inhib_mask) else 0.0
             exc_active2 = exc_mask & active2_mask
             inh_active2 = inhib_mask & active2_mask
             out["rate_mean_Hz_E_active2spk"] = float(np.nanmean(rates[exc_active2])) if np.any(exc_active2) else 0.0
+            out["rate_std_Hz_E_active2spk"] = float(np.nanstd(rates[exc_active2])) if np.any(exc_active2) else 0.0
             out["rate_mean_Hz_I_active2spk"] = float(np.nanmean(rates[inh_active2])) if np.any(inh_active2) else 0.0
+            out["rate_std_Hz_I_active2spk"] = float(np.nanstd(rates[inh_active2])) if np.any(inh_active2) else 0.0
         active_mask = spike_counts_total > 0
 
         # --- ISI CV per neuron ---
@@ -277,9 +285,15 @@ class SimulationStats:
         band_mask = (f >= 2.0) & (f <= 120.0)
         if np.any(band_mask):
             band = np.asarray(Pxx[band_mask], dtype=float)
+            band_freqs = np.asarray(f[band_mask], dtype=float)
             band_median = float(np.median(band))
+            peak_idx = int(np.argmax(band))
+            out["psd_peak_freq_hz"] = float(band_freqs[peak_idx])
+            out["psd_peak_amplitude"] = float(band[peak_idx])
             out["psd_peak_ratio"] = float(np.max(band) / (band_median + 1e-12)) if band_median > 0.0 else 0.0
         else:
+            out["psd_peak_freq_hz"] = 0.0
+            out["psd_peak_amplitude"] = 0.0
             out["psd_peak_ratio"] = 0.0
         out["pop_spec_entropy"] = spectral_entropy(Pxx)
         out["pop_psd_freq_hz"] = f
