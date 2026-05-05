@@ -1,0 +1,50 @@
+python FinalPaper\grid_search_normalization_topology.py --j-values 0.4 0.75 1.0 1.25 1.5 --g-values 0.4 0.75 1.0 1.25 1.5 --input-amplitudes 0.0 0.1 0.2 0.5 1.0 3.0 10.0 --job-index 0 --num-jobs 4 --seed-count 5
+
+python FinalPaper\grid_search_normalization_topology.py --j-values 0.2 0.4 0.75 1.0 1.25 1.5 --g-values 0.6 1.0 1.35 1.75 2.0 2.5 --input-amplitudes 0.0 0.05 0.1 0.2 0.5 1.0 3.0 --job-index 0 --num-jobs 4 --seed-count 5
+python FinalPaper\grid_search_normalization_topology.py --j-values 0.2 0.4 0.75 1.0 1.25 1.5 --g-values 0.6 1.0 1.35 1.75 2.0 2.5 --input-amplitudes 0.0 0.05 0.1 0.2 0.5 1.0 3.0 --job-index 1 --num-jobs 4 --seed-count 5
+python FinalPaper\grid_search_normalization_topology.py --j-values 0.2 0.4 0.75 1.0 1.25 1.5 --g-values 0.6 1.0 1.35 1.75 2.0 2.5 --input-amplitudes 0.0 0.05 0.1 0.2 0.5 1.0 3.0 --job-index 2 --num-jobs 4 --seed-count 5
+python FinalPaper\grid_search_normalization_topology.py --j-values 0.2 0.4 0.75 1.0 1.25 1.5 --g-values 0.6 1.0 1.35 1.75 2.0 2.5 --input-amplitudes 0.0 0.05 0.1 0.2 0.5 1.0 3.0 --job-index 3 --num-jobs 4 --seed-count 5
+
+
+
+python FinalPaper\grid_search_normalization_topology.py --j-values 0.1 0.2 0.4 0.75 1.0 1.25 --g-values 0.6 1.0 1.5 2.0 3.0 5.0 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --job-index 0 --num-jobs 4 --seed-count 5
+python FinalPaper\grid_search_normalization_topology.py --j-values 0.1 0.2 0.4 0.75 1.0 1.25 --g-values 0.6 1.0 1.5 2.0 3.0 5.0 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --job-index 1 --num-jobs 4 --seed-count 5
+python FinalPaper\grid_search_normalization_topology.py --j-values 0.1 0.2 0.4 0.75 1.0 1.25 --g-values 0.6 1.0 1.5 2.0 3.0 5.0 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --job-index 2 --num-jobs 4 --seed-count 5
+python FinalPaper\grid_search_normalization_topology.py --j-values 0.1 0.2 0.4 0.75 1.0 1.25 --g-values 0.6 1.0 1.5 2.0 3.0 5.0 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --job-index 3 --num-jobs 4 --seed-count 5
+
+
+
+powershell -ExecutionPolicy Bypass -File FinalPaper\run_scipts\launch_grid_jobs.ps1 -NumJobs 4 -OutputDir FinalPaper\results\normalization_grid -GridArgs "--j-values 0.1 0.2 0.4 0.75 1.0 1.25 --g-values 0.6 1.0 1.5 2.0 3.0 5.0 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --seed-count 5"
+
+powershell -ExecutionPolicy Bypass -File FinalPaper\run_scipts\launch_grid_jobs.ps1 -NumJobs 8 -OutputDir FinalPaper\results\normalization_grid -GridArgs "--j-values 0.1 0.2 0.4 0.75 1.0 1.25 1.75 --g-values 0.6 1.0 1.5 2.0 3.0 5.0 10.0 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --seed-count 9"
+
+
+powershell -ExecutionPolicy Bypass -File FinalPaper\run_scipts\launch_grid_jobs.ps1 -NumJobs 8 -OutputDir FinalPaper\results\normalization_grid -GridArgs "--augment-existing --add-j-values 0.6 --add-g-values 0.4"
+
+
+
+
+powershell -ExecutionPolicy Bypass -File FinalPaper\run_scipts\launch_grid_jobs.ps1 -NumJobs 8 -OutputDir FinalPaper\results\normalization_grid -GridArgs "--sweep b-target-normalization --x-values 0.1 0.2 0.4 0.75 1.0 1.25 --y-values 0.6 1.0 1.5 2.0 3.0 5.0 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --seed-count 9"
+
+
+
+powershell -ExecutionPolicy Bypass -File FinalPaper\run_scipts\launch_grid_jobs.ps1 -NumJobs 8 -OutputDir FinalPaper\results\delay_grid -GridArgs "--sweep delay --x-values 0.8 1.5 5.0 10.0 20.0 --y-values 0.8 1.5 5.0 10.0 20.0 --delay-std-fraction 0.3 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --seed-count 5"
+
+powershell -ExecutionPolicy Bypass -File FinalPaper\run_scipts\launch_grid_jobs.ps1 -NumJobs 8 -OutputDir FinalPaper\results\delay_grid -GridArgs "--sweep delay --topologies fixed spatial --fixed-e-delay-values 0.8 1.5 5.0 10.0 20.0 --fixed-i-delay-values 0.8 1.5 5.0 10.0 20.0 --spatial-e-lambda-values 0.05 0.1 0.2 0.4 0.8 --spatial-i-lambda-values 0.05 0.1 0.2 0.4 0.8 --delay-std-fraction 0.3 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --seed-count 5"
+
+
+
+powershell -ExecutionPolicy Bypass -Command "Start-Sleep -Seconds 3600; & 'FinalPaper\run_scipts\launch_grid_jobs.ps1' -NumJobs 8 -OutputDir 'FinalPaper\results\threshold_hetero_grid' -GridArgs '--sweep threshold-heterogeneity --x-values 0 0.5 1 3 7 --y-values 0 0.5 1 3 7 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --seed-count 5'"
+
+
+python FinalPaper\grid_search_normalization_topology.py --sweep threshold-heterogeneity --x-values 0 0.5 1 3 7 --y-values 0 0.5 1 3 7
+
+
+
+powershell -ExecutionPolicy Bypass -Command "Start-Sleep -Seconds 3200; & 'FinalPaper\run_scipts\launch_grid_jobs.ps1' -NumJobs 8 -OutputDir 'FinalPaper\results\size_inhibition_grid' -GridArgs '--sweep size-inhibition --x-values 500 1000 2000 5000 --y-values 0.1 0.2 0.3 0.4 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --seed-count 5'"
+
+
+
+
+
+powershell -ExecutionPolicy Bypass -File FinalPaper\run_scipts\launch_grid_jobs.ps1 -NumJobs 8 -OutputDir FinalPaper\results\normalization_grid -GridArgs "--j-values 0.1 0.2 0.4 0.6 0.75 1.0 1.25 1.75 --g-values 0.4 0.6 1.0 1.5 2.0 3.0 5.0 10.0 --input-amplitudes 0.0 0.02 0.05 0.1 0.2 0.5 1.0 3.0 --seed-count 9"
