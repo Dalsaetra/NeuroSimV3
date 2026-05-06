@@ -19,6 +19,7 @@ import argparse
 import json
 import math
 import sys
+import textwrap
 from pathlib import Path
 from typing import Iterable
 
@@ -71,6 +72,49 @@ BIFURCATION_REGION_COLORS = {
     "oscillatory": "#1D3557",
     "NA": "#F0F0F0",
 }
+
+COMPOSITE_SCORE_COMPONENTS = [
+    (
+        "generalization",
+        "linear_readout_test_accuracy_mean",
+        "linear_readout_test_accuracy",
+        "linear readout test accuracy",
+        0.75,
+    ),
+    (
+        "generalization",
+        "between_within_scatter_ratio_mean",
+        "between_within_scatter_ratio",
+        "between/within scatter ratio",
+        0.25,
+    ),
+    (
+        "memory",
+        "memory_first_negative_delay_ms_mean",
+        "memory_first_negative_delay_ms",
+        "first negative delay ms",
+        1.0,
+    ),
+    (
+        "separation",
+        "effective_rank_norm_mean_mean",
+        "effective_rank_norm_mean",
+        "effective rank norm mean",
+        1.0,
+    ),
+]
+
+CLASS_ENTROPY_SPECS = [
+    ("brunel_class", "Brunel class", "brunel.brunel_class", BRUNEL_ORDER),
+    ("persistence_regeneration_class", "Persistence/regeneration class", "pr_er_class", PERSISTENCE_REGEN_ORDER),
+]
+
+BINARY_CLASS_ENTROPY_SPECS = [
+    ("synchrony_axis", "Synchronous/asynchronous", "binary.synchrony_axis", ["asynchronous", "synchronous"]),
+    ("irregularity_axis", "Irregular/regular", "binary.irregularity_axis", ["regular", "irregular"]),
+    ("persistence_axis", "Persistent/non-persistent", "binary.persistence_axis", ["non-persistent", "persistent"]),
+    ("regeneration_axis", "Regenerative/non-regenerative", "binary.regeneration_axis", ["non-regenerative", "regenerative"]),
+]
 
 AXIS_LABELS = {
     "J": ("J global normalization gain", "J"),
@@ -193,6 +237,42 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.5,
         help="Seed fraction required to call an input-amplitude point bistable in the summary phase-region plots.",
+    )
+    parser.add_argument(
+        "--phase-region-active-fraction",
+        type=float,
+        default=0.5,
+        help="Seed fraction required in both sweep directions to call a monostable input-amplitude point active.",
+    )
+    parser.add_argument(
+        "--composite-correlation-method",
+        choices=["pearson", "spearman"],
+        default="spearman",
+        help="Correlation method for reservoir-score versus regime-metric overview tables.",
+    )
+    parser.add_argument(
+        "--composite-correlation-top-n",
+        type=int,
+        default=10,
+        help="Number of top absolute regime-metric correlations to show for each composite score component.",
+    )
+    parser.add_argument(
+        "--composite-top-class-count",
+        type=int,
+        default=16,
+        help="Number of top grid conditions to use when summarizing Brunel and persistence/regeneration class distributions.",
+    )
+    parser.add_argument(
+        "--composite-entropy-null-iterations",
+        type=int,
+        default=5000,
+        help="Random top-N draws used for the class-entropy null comparison.",
+    )
+    parser.add_argument(
+        "--composite-entropy-null-seed",
+        type=int,
+        default=12345,
+        help="Random seed for the class-entropy null comparison.",
     )
     parser.add_argument(
         "--grid-row-label",
@@ -538,6 +618,487 @@ def numeric_summary(
     return summary
 
 
+def build_composite_score_summary(
+    *,
+    separation_summary: pd.DataFrame,
+    memory_summary: pd.DataFrame,
+    generalization_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    """Min-max normalize selected mean metrics, then sum them into one score."""
+    source_tables = {
+        "separation": separation_summary,
+        "memory": memory_summary,
+        "generalization": generalization_summary,
+    }
+    composite = None
+    included_components = []
+    component_weights = {}
+
+    for source_name, source_column, output_column, _label, weight in COMPOSITE_SCORE_COMPONENTS:
+        source = source_tables[source_name]
+        if source.empty or source_column not in source.columns:
+            continue
+        component = source[[*CONDITION_COLUMNS, source_column]].copy()
+        component = component.rename(columns={source_column: output_column})
+        composite = component if composite is None else composite.merge(component, on=CONDITION_COLUMNS, how="outer")
+        included_components.append(output_column)
+        component_weights[output_column] = float(weight)
+
+    if composite is None:
+        return pd.DataFrame(columns=CONDITION_COLUMNS)
+
+    normalized_columns = []
+    weighted_columns = []
+    for column in included_components:
+        values = pd.to_numeric(composite[column], errors="coerce")
+        finite = values[np.isfinite(values)]
+        normalized_column = f"{column}_norm"
+        if finite.empty:
+            composite[normalized_column] = np.nan
+        else:
+            vmin = float(finite.min())
+            vmax = float(finite.max())
+            if math.isclose(vmin, vmax):
+                composite[normalized_column] = np.where(values.notna(), 1.0, np.nan)
+            else:
+                composite[normalized_column] = (values - vmin) / (vmax - vmin)
+        normalized_columns.append(normalized_column)
+        weight = component_weights.get(column, 0.0)
+        composite[f"{column}_weight"] = weight
+        if weight > 0.0:
+            weighted_column = f"{column}_weighted"
+            composite[weighted_column] = composite[normalized_column] * weight
+            weighted_columns.append(weighted_column)
+
+    composite["composite_component_count"] = composite[normalized_columns].notna().sum(axis=1)
+    composite["composite_weight_sum"] = sum(
+        component_weights[column] for column in included_components if component_weights.get(column, 0.0) > 0.0
+    )
+    composite["composite_score"] = composite[weighted_columns].sum(axis=1, min_count=1) if weighted_columns else np.nan
+    composite["composite_score_mean_component"] = (
+        composite["composite_score"] / composite["composite_weight_sum"] if composite["composite_weight_sum"].iat[0] else np.nan
+    )
+    return composite
+
+
+def composite_score_weight_sum() -> float:
+    return float(sum(weight for *_unused, weight in COMPOSITE_SCORE_COMPONENTS if float(weight) > 0.0))
+
+
+def composite_raw_column(summary_column: str) -> str:
+    return summary_column.removesuffix("_mean")
+
+
+def aggregate_numeric_for_keys(
+    df: pd.DataFrame,
+    *,
+    key_columns: list[str],
+    value_columns: list[str],
+) -> pd.DataFrame:
+    available = [column for column in value_columns if column in df.columns]
+    if df.empty or not available or not all(column in df.columns for column in key_columns):
+        return pd.DataFrame(columns=key_columns)
+    out = df[[*key_columns, *available]].copy()
+    ensure_numeric(out, available)
+    return out.groupby(key_columns, dropna=False)[available].mean().reset_index()
+
+
+def regime_metric_correlation_candidates(regime: pd.DataFrame, key_columns: list[str]) -> list[str]:
+    prefixes = ("observation.", "transient.")
+    candidates = []
+    for column in regime.columns:
+        if column in key_columns or not column.startswith(prefixes):
+            continue
+        values = pd.to_numeric(regime[column], errors="coerce")
+        finite = values[np.isfinite(values)]
+        if finite.size >= 3 and finite.nunique() > 1:
+            candidates.append(column)
+    return candidates
+
+
+def build_composite_metric_correlations(
+    *,
+    regime: pd.DataFrame,
+    separation: pd.DataFrame,
+    memory: pd.DataFrame,
+    generalization: pd.DataFrame,
+    method: str = "spearman",
+    top_n: int = 10,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Correlate composite component metrics against raw regime observation metrics."""
+    source_tables = {
+        "separation": separation,
+        "memory": memory,
+        "generalization": generalization,
+    }
+    key_columns = [column for column in [*CONDITION_COLUMNS, "seed"] if column in regime.columns]
+    if not key_columns or regime.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    metric_columns = regime_metric_correlation_candidates(regime, key_columns)
+    if not metric_columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    merged = aggregate_numeric_for_keys(regime, key_columns=key_columns, value_columns=metric_columns)
+    score_labels = {}
+    score_columns = []
+    for source_name, source_column, output_column, label, _weight in COMPOSITE_SCORE_COMPONENTS:
+        raw_column = composite_raw_column(source_column)
+        score_df = aggregate_numeric_for_keys(
+            source_tables[source_name],
+            key_columns=key_columns,
+            value_columns=[raw_column],
+        )
+        if score_df.empty or raw_column not in score_df.columns:
+            continue
+        score_df = score_df.rename(columns={raw_column: output_column})
+        merged = merged.merge(score_df, on=key_columns, how="left")
+        score_columns.append(output_column)
+        score_labels[output_column] = label
+
+    rows = []
+    for score_column in score_columns:
+        x = pd.to_numeric(merged[score_column], errors="coerce")
+        for metric_column in metric_columns:
+            y = pd.to_numeric(merged[metric_column], errors="coerce")
+            valid = x.notna() & y.notna() & np.isfinite(x) & np.isfinite(y)
+            n = int(valid.sum())
+            if n < 3 or x[valid].nunique() < 2 or y[valid].nunique() < 2:
+                continue
+            corr = float(x[valid].corr(y[valid], method=method))
+            if not np.isfinite(corr):
+                continue
+            rows.append(
+                {
+                    "reservoir_score": score_column,
+                    "reservoir_score_label": score_labels.get(score_column, pretty_label(score_column)),
+                    "metric": metric_column,
+                    "metric_label": pretty_label(metric_column.replace("observation.", "observation ").replace("transient.", "transient ")),
+                    "correlation": corr,
+                    "abs_correlation": abs(corr),
+                    "n": n,
+                    "method": method,
+                }
+            )
+
+    correlations = pd.DataFrame(rows)
+    if correlations.empty:
+        return correlations, correlations
+    correlations = correlations.sort_values(
+        ["reservoir_score", "abs_correlation", "metric"],
+        ascending=[True, False, True],
+    ).reset_index(drop=True)
+    top_correlations = (
+        correlations.groupby("reservoir_score", group_keys=False)
+        .head(max(1, int(top_n)))
+        .copy()
+        .reset_index(drop=True)
+    )
+    top_correlations["rank"] = top_correlations.groupby("reservoir_score").cumcount() + 1
+    return correlations, top_correlations
+
+
+def composite_top_selection_specs() -> list[tuple[str, str]]:
+    return [
+        ("composite_score", "composite reservoir score"),
+        *[(output_column, label) for _source_name, _source_column, output_column, label, _weight in COMPOSITE_SCORE_COMPONENTS],
+    ]
+
+
+def build_top_score_class_distributions(
+    *,
+    regime: pd.DataFrame,
+    composite_summary: pd.DataFrame,
+    top_n: int = 16,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if regime.empty or composite_summary.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    condition_columns = [column for column in CONDITION_COLUMNS if column in composite_summary.columns and column in regime.columns]
+    if len(condition_columns) != len(CONDITION_COLUMNS):
+        return pd.DataFrame(), pd.DataFrame()
+
+    top_condition_rows = []
+    distribution_rows = []
+    class_specs = [
+        ("brunel_class", "Brunel class", "brunel.brunel_class"),
+        ("persistence_regeneration_class", "Persistence/regeneration class", "pr_er_class"),
+    ]
+
+    for selection_order, (score_column, score_label) in enumerate(composite_top_selection_specs()):
+        if score_column not in composite_summary.columns:
+            continue
+        score_rows = composite_summary[[*condition_columns, score_column]].copy()
+        score_rows[score_column] = pd.to_numeric(score_rows[score_column], errors="coerce")
+        score_rows = score_rows.dropna(subset=[score_column])
+        if score_rows.empty:
+            continue
+        for topology in sorted(score_rows["topology"].dropna().unique()):
+            ranked = score_rows[score_rows["topology"] == topology].copy()
+            if ranked.empty:
+                continue
+            ranked = ranked.sort_values(
+                [score_column, *condition_columns],
+                ascending=[False, *([True] * len(condition_columns))],
+            )
+            ranked = ranked.head(max(1, int(top_n))).copy()
+            ranked["selection_metric"] = score_column
+            ranked["selection_label"] = score_label
+            ranked["selection_order"] = selection_order
+            ranked["rank"] = np.arange(1, len(ranked) + 1)
+            ranked = ranked.rename(columns={score_column: "score_value"})
+            top_condition_rows.append(
+                ranked[["selection_order", "selection_metric", "selection_label", "rank", *condition_columns, "score_value"]]
+            )
+
+            selected = ranked[condition_columns].drop_duplicates()
+            selected_regime = regime.merge(selected, on=condition_columns, how="inner")
+            for class_family, class_label, class_column in class_specs:
+                if class_column not in selected_regime.columns:
+                    continue
+                counts = selected_regime[class_column].fillna("NA").astype(str).value_counts()
+                total = int(counts.sum())
+                for class_value, count in counts.items():
+                    distribution_rows.append(
+                        {
+                            "selection_order": selection_order,
+                            "selection_metric": score_column,
+                            "selection_label": score_label,
+                            "topology": topology,
+                            "top_n_conditions": int(len(ranked)),
+                            "class_family": class_family,
+                            "class_family_label": class_label,
+                            "class": class_value,
+                            "count": int(count),
+                            "fraction": float(count / total) if total else np.nan,
+                            "total": total,
+                        }
+                )
+
+    top_conditions = pd.concat(top_condition_rows, ignore_index=True) if top_condition_rows else pd.DataFrame()
+    distributions = pd.DataFrame(distribution_rows)
+    if not distributions.empty:
+        distributions = distributions.sort_values(
+            ["topology", "selection_order", "class_family", "count", "class"],
+            ascending=[True, True, True, False, True],
+        ).reset_index(drop=True)
+        distributions["frequency_rank"] = distributions.groupby(
+            ["topology", "selection_metric", "class_family"]
+        ).cumcount() + 1
+    return top_conditions, distributions
+
+
+def normalized_class_entropy(labels: pd.Series, categories: list[str]) -> float:
+    values = labels.fillna("NA").astype(str)
+    counts = values.value_counts()
+    total = int(counts.sum())
+    if total == 0:
+        return np.nan
+    probabilities = counts.to_numpy(dtype=float) / float(total)
+    entropy = -float(np.sum(probabilities * np.log(probabilities)))
+    max_entropy = math.log(max(2, len(categories)))
+    return max(0.0, float(entropy / max_entropy))
+
+
+def build_condition_class_entropy(
+    regime: pd.DataFrame,
+    *,
+    class_specs: list[tuple[str, str, str, list[str]]] = CLASS_ENTROPY_SPECS,
+) -> pd.DataFrame:
+    if regime.empty:
+        return pd.DataFrame()
+    rows = []
+    for group_key, group in regime.groupby(CONDITION_COLUMNS, dropna=False):
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+        base = {column: value for column, value in zip(CONDITION_COLUMNS, group_key)}
+        for class_family, class_label, class_column, categories in class_specs:
+            if class_column not in group.columns:
+                continue
+            counts = group[class_column].fillna("NA").astype(str).value_counts()
+            total = int(counts.sum())
+            rows.append(
+                {
+                    **base,
+                    "class_family": class_family,
+                    "class_family_label": class_label,
+                    "class_entropy_norm": normalized_class_entropy(group[class_column], categories),
+                    "class_mode": str(counts.index[0]) if total else "NA",
+                    "class_mode_count": int(counts.iloc[0]) if total else 0,
+                    "class_mode_fraction": float(counts.iloc[0] / total) if total else np.nan,
+                    "n_seeds": total,
+                    "n_classes_observed": int(counts.size),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def add_binary_class_axes(regime: pd.DataFrame) -> pd.DataFrame:
+    out = regime.copy()
+
+    brunel_class = out.get("brunel.brunel_class", pd.Series(index=out.index, dtype=object)).fillna("").astype(str)
+    if "brunel.brunel_synchronous" in out.columns:
+        synchronous = coerce_bool(out["brunel.brunel_synchronous"])
+    else:
+        synchronous = brunel_class.isin(["SI", "SR"])
+    if "brunel.brunel_irregular" in out.columns:
+        irregular = coerce_bool(out["brunel.brunel_irregular"])
+    else:
+        irregular = brunel_class.isin(["AI", "SI"])
+
+    out["binary.synchrony_axis"] = np.where(synchronous, "synchronous", "asynchronous")
+    out["binary.irregularity_axis"] = np.where(irregular, "irregular", "regular")
+
+    if "persistence.is_persistent" in out.columns:
+        persistent = coerce_bool(out["persistence.is_persistent"])
+    else:
+        pr_er_class = out.get("pr_er_class", pd.Series(index=out.index, dtype=object)).fillna("").astype(str)
+        persistent = pr_er_class.str.startswith("P")
+    pr_er_class = out.get("pr_er_class", pd.Series(index=out.index, dtype=object)).fillna("").astype(str)
+    regenerative = pr_er_class.str.endswith("R")
+
+    out["binary.persistence_axis"] = np.where(persistent, "persistent", "non-persistent")
+    out["binary.regeneration_axis"] = np.where(regenerative, "regenerative", "non-regenerative")
+    return out
+
+
+def build_brunel_persistence_cooccurrence(regime: pd.DataFrame) -> pd.DataFrame:
+    if regime.empty or "brunel.brunel_class" not in regime.columns or "pr_er_class" not in regime.columns:
+        return pd.DataFrame()
+
+    rows = []
+    topologies = ["all", *sorted(regime["topology"].dropna().astype(str).unique())] if "topology" in regime.columns else ["all"]
+    for topology in topologies:
+        subset = regime if topology == "all" else regime[regime["topology"].astype(str) == topology]
+        if subset.empty:
+            continue
+        counts = (
+            subset.assign(
+                brunel_class=subset["brunel.brunel_class"].fillna("NA").astype(str),
+                persistence_regeneration_class=subset["pr_er_class"].fillna("NA").astype(str),
+            )
+            .groupby(["brunel_class", "persistence_regeneration_class"], dropna=False)
+            .size()
+            .reset_index(name="count")
+        )
+        total = int(counts["count"].sum())
+        counts["fraction"] = counts["count"] / float(total) if total else np.nan
+        counts["topology"] = topology
+        counts["total"] = total
+        rows.append(counts)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
+def build_top_score_entropy_null(
+    *,
+    composite_summary: pd.DataFrame,
+    condition_entropy: pd.DataFrame,
+    top_n: int = 16,
+    null_iterations: int = 5000,
+    rng_seed: int = 12345,
+    correlation_method: str = "spearman",
+) -> pd.DataFrame:
+    if composite_summary.empty or condition_entropy.empty:
+        return pd.DataFrame()
+
+    rng = np.random.default_rng(int(rng_seed))
+    rows = []
+    selection_specs = composite_top_selection_specs()
+    null_iterations = max(1, int(null_iterations))
+    top_n = max(1, int(top_n))
+
+    for topology in sorted(composite_summary["topology"].dropna().unique()):
+        score_rows = composite_summary[composite_summary["topology"] == topology].copy()
+        entropy_rows = condition_entropy[condition_entropy["topology"] == topology].copy()
+        if score_rows.empty or entropy_rows.empty:
+            continue
+
+        for score_order, (score_column, score_label) in enumerate(selection_specs):
+            if score_column not in score_rows.columns:
+                continue
+            scores = score_rows[[*CONDITION_COLUMNS, score_column]].copy()
+            scores[score_column] = pd.to_numeric(scores[score_column], errors="coerce")
+            scores = scores.dropna(subset=[score_column])
+            if scores.empty:
+                continue
+
+            merged = entropy_rows.merge(scores, on=CONDITION_COLUMNS, how="inner")
+            if merged.empty:
+                continue
+
+            for class_family, family_rows in merged.groupby("class_family", dropna=False):
+                family_rows = family_rows.copy()
+                family_rows["class_entropy_norm"] = pd.to_numeric(
+                    family_rows["class_entropy_norm"],
+                    errors="coerce",
+                )
+                family_rows = family_rows.dropna(subset=["class_entropy_norm", score_column])
+                if family_rows.empty:
+                    continue
+
+                ranked = family_rows.sort_values(
+                    [score_column, *CONDITION_COLUMNS],
+                    ascending=[False, *([True] * len(CONDITION_COLUMNS))],
+                )
+                selected = ranked.head(min(top_n, len(ranked))).copy()
+                observed = float(selected["class_entropy_norm"].mean())
+                values = family_rows["class_entropy_norm"].to_numpy(dtype=float)
+                draw_n = min(top_n, values.size)
+                null_means = np.empty(null_iterations, dtype=float)
+                for idx in range(null_iterations):
+                    sample = rng.choice(values, size=draw_n, replace=False)
+                    null_means[idx] = float(np.mean(sample))
+
+                all_corr = np.nan
+                if (
+                    len(family_rows) >= 3
+                    and family_rows[score_column].nunique() > 1
+                    and family_rows["class_entropy_norm"].nunique() > 1
+                ):
+                    all_corr = family_rows[score_column].corr(
+                        family_rows["class_entropy_norm"],
+                        method=correlation_method,
+                    )
+                top_corr = np.nan
+                if (
+                    len(selected) >= 3
+                    and selected[score_column].nunique() > 1
+                    and selected["class_entropy_norm"].nunique() > 1
+                ):
+                    top_corr = selected[score_column].corr(
+                        selected["class_entropy_norm"],
+                        method=correlation_method,
+                    )
+                null_mean = float(np.mean(null_means))
+                null_std = float(np.std(null_means, ddof=1)) if null_means.size > 1 else np.nan
+                rows.append(
+                    {
+                        "topology": topology,
+                        "selection_order": score_order,
+                        "selection_metric": score_column,
+                        "selection_label": score_label,
+                        "class_family": class_family,
+                        "class_family_label": str(family_rows["class_family_label"].iloc[0]),
+                        "top_n_conditions": int(len(selected)),
+                        "observed_mean_entropy": observed,
+                        "null_mean_entropy": null_mean,
+                        "null_std_entropy": null_std,
+                        "null_p05_entropy": float(np.percentile(null_means, 5)),
+                        "null_p50_entropy": float(np.percentile(null_means, 50)),
+                        "null_p95_entropy": float(np.percentile(null_means, 95)),
+                        "observed_minus_null_mean": observed - null_mean,
+                        "observed_null_percentile": float(np.mean(null_means <= observed)),
+                        "p_null_ge_observed": float((np.sum(null_means >= observed) + 1) / (null_iterations + 1)),
+                        "score_entropy_correlation_all": float(all_corr) if pd.notna(all_corr) else np.nan,
+                        "score_entropy_correlation_top": float(top_corr) if pd.notna(top_corr) else np.nan,
+                        "correlation_method": correlation_method,
+                        "null_iterations": null_iterations,
+                        "available_conditions": int(len(family_rows)),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
 def derive_persistence_regen_code(df: pd.DataFrame) -> pd.Series:
     persistent = coerce_bool(df["persistence.is_persistent"])
     persistent_regenerative = coerce_bool(df["regeneration.is_persistent_regenerative"])
@@ -555,6 +1116,47 @@ def derive_bifurcation_phase(df: pd.DataFrame) -> pd.Series:
     active = coerce_bool(df["is_active"])
     strong = coerce_bool(df["is_strongly_oscillatory"])
     return pd.Series(np.where(strong, "SO", np.where(active, "A", "Q")), index=df.index)
+
+
+def derive_brunel_class_from_metrics(
+    df: pd.DataFrame,
+    *,
+    cv_threshold: float = 0.99,
+    fano_threshold: float = 0.99,
+    corr_threshold: float = 0.05,
+    peak_ratio_threshold: float = 250.0,
+    entropy_norm_threshold: float = 0.85,
+    bursty_fano_threshold: float = 3.0,
+) -> pd.Series:
+    def metric_series(column: str, default: float) -> pd.Series:
+        if column in df.columns:
+            return pd.to_numeric(df[column], errors="coerce").fillna(default)
+        return pd.Series(default, index=df.index, dtype=float)
+
+    fano = metric_series("Fano_median_300ms", 0.0)
+    isi_cv_e = metric_series("ISI_CV_mean_E" if "ISI_CV_mean_E" in df.columns else "ISI_CV_mean", 0.0)
+    corr = metric_series("mean_noise_corr_50ms", 0.0)
+    peak_ratio = metric_series("psd_peak_ratio", 0.0)
+    entropy_norm = metric_series("pop_spec_entropy_norm", np.inf)
+
+    irregular = (fano > float(fano_threshold)) & (isi_cv_e > float(cv_threshold))
+    synchronous_by_corr = corr > float(corr_threshold)
+    oscillatory = ((peak_ratio > float(peak_ratio_threshold)) & (entropy_norm < float(entropy_norm_threshold)))
+    oscillatory = oscillatory | (peak_ratio > float(peak_ratio_threshold + 100.0))
+    oscillatory = oscillatory | (entropy_norm < float(entropy_norm_threshold - 0.1))
+    synchronous = synchronous_by_corr | oscillatory
+    return pd.Series(
+        np.select(
+            [
+                (~synchronous) & irregular,
+                synchronous & irregular,
+                (~synchronous) & (~irregular),
+            ],
+            ["AI", "SI", "AR"],
+            default="SR",
+        ),
+        index=df.index,
+    )
 
 
 def recompute_brunel_labels(
@@ -615,6 +1217,7 @@ def build_bifurcation_phase_regions(
     oscillatory_fraction_threshold: float = 0.5,
     bistable_fraction_threshold: float = 0.5,
     bistable_tolerance: float = 1e-12,
+    active_fraction_threshold: float = 0.5,
 ) -> pd.DataFrame:
     """Build monostable/bistable/oscillatory labels over topology, J, g, amplitude."""
     if phase_summary.empty:
@@ -630,7 +1233,22 @@ def build_bifurcation_phase_regions(
         .reset_index()
         .rename(columns={"up": "strongly_oscillatory_fraction_up", "down": "strongly_oscillatory_fraction_down"})
     )
+    active_pivot = (
+        phase_summary.pivot_table(
+            index=[*CONDITION_COLUMNS, "input_amplitude"],
+            columns="sweep_direction",
+            values="active_fraction",
+            aggfunc="first",
+        )
+        .reset_index()
+        .rename(columns={"up": "active_fraction_up", "down": "active_fraction_down"})
+    )
+    pivot = pivot.merge(active_pivot, on=[*CONDITION_COLUMNS, "input_amplitude"], how="left")
     for column in ("strongly_oscillatory_fraction_up", "strongly_oscillatory_fraction_down"):
+        if column not in pivot.columns:
+            pivot[column] = np.nan
+        pivot[column] = pd.to_numeric(pivot[column], errors="coerce")
+    for column in ("active_fraction_up", "active_fraction_down"):
         if column not in pivot.columns:
             pivot[column] = np.nan
         pivot[column] = pd.to_numeric(pivot[column], errors="coerce")
@@ -696,6 +1314,14 @@ def build_bifurcation_phase_regions(
 
     regions["bistable_fraction"] = pd.to_numeric(regions["bistable_fraction"], errors="coerce").fillna(0.0)
     regions["is_bistable_region"] = regions["bistable_fraction"] >= float(bistable_fraction_threshold)
+    regions["is_active_monostable_region"] = (
+        (regions["active_fraction_up"] >= float(active_fraction_threshold))
+        & (regions["active_fraction_down"] >= float(active_fraction_threshold))
+    )
+    regions["is_inactive_monostable_region"] = (
+        (regions["active_fraction_up"] < float(active_fraction_threshold))
+        & (regions["active_fraction_down"] < float(active_fraction_threshold))
+    )
 
     regions["phase_region"] = np.select(
         [regions["is_oscillatory_region"], regions["is_bistable_region"]],
@@ -790,6 +1416,8 @@ def regime_metric_cmap(column: str) -> str:
         return "plasma"
     if "psd" in key or "spec_entropy" in key:
         return "cividis"
+    if "potjans_diesmann_synchrony" in key:
+        return "YlOrRd"
     if "synchrony" in key:
         return "magma"
     if "corr" in key:
@@ -870,10 +1498,99 @@ def plot_categorical_heatmap(
                 label = f"{label}\n{float(pivot_frac.iat[yi, xi]):.0%}"
             ax.text(xi, yi, label, ha="center", va="center", fontsize=8, color="black")
 
-    handles = [Patch(facecolor=colors.get(category, "#F0F0F0"), edgecolor="black", label=category) for category in ordered_categories]
+    present_categories = set(pivot_cat.to_numpy().ravel().astype(str))
+    handles = [
+        Patch(facecolor=colors.get(category, "#F0F0F0"), edgecolor="black", label=category)
+        for category in ordered_categories
+        if category != "NA" or category in present_categories
+    ]
     if has_hatch and hatch_label:
         handles.append(Patch(facecolor="white", edgecolor=(0.0, 0.0, 0.0, 0.45), hatch="//////", label=hatch_label, alpha=0.55))
     ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=dpi)
+    plt.close(fig)
+
+
+def plot_brunel_persistence_cooccurrence(
+    cooccurrence: pd.DataFrame,
+    *,
+    output_path: Path,
+    dpi: int = 180,
+) -> None:
+    if cooccurrence.empty:
+        return
+
+    topology_values = ["all", *[value for value in sorted(cooccurrence["topology"].dropna().astype(str).unique()) if value != "all"]]
+    topology_values = [value for value in topology_values if value in set(cooccurrence["topology"].astype(str))]
+    if not topology_values:
+        return
+
+    brunel_categories = [category for category in BRUNEL_ORDER if category in set(cooccurrence["brunel_class"])]
+    brunel_categories.extend(
+        category for category in sorted(cooccurrence["brunel_class"].dropna().astype(str).unique())
+        if category not in brunel_categories and category != "NA"
+    )
+    if "NA" in set(cooccurrence["brunel_class"]):
+        brunel_categories.append("NA")
+
+    pr_categories = [category for category in PERSISTENCE_REGEN_ORDER if category in set(cooccurrence["persistence_regeneration_class"])]
+    pr_categories.extend(
+        category for category in sorted(cooccurrence["persistence_regeneration_class"].dropna().astype(str).unique())
+        if category not in pr_categories and category != "NA"
+    )
+    if "NA" in set(cooccurrence["persistence_regeneration_class"]):
+        pr_categories.append("NA")
+
+    n_panels = len(topology_values)
+    fig, axes = plt.subplots(
+        1,
+        n_panels,
+        figsize=(4.6 * n_panels, 4.7),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    axes_flat = axes.ravel()
+    vmax = float(cooccurrence["fraction"].max()) if "fraction" in cooccurrence.columns else None
+
+    for ax, topology in zip(axes_flat, topology_values):
+        subset = cooccurrence[cooccurrence["topology"].astype(str) == str(topology)]
+        fraction_pivot = (
+            subset.pivot(
+                index="brunel_class",
+                columns="persistence_regeneration_class",
+                values="fraction",
+            )
+            .reindex(index=brunel_categories, columns=pr_categories)
+            .fillna(0.0)
+        )
+        count_pivot = (
+            subset.pivot(
+                index="brunel_class",
+                columns="persistence_regeneration_class",
+                values="count",
+            )
+            .reindex(index=brunel_categories, columns=pr_categories)
+            .fillna(0)
+        )
+        image = ax.imshow(fraction_pivot.to_numpy(dtype=float), origin="lower", aspect="auto", cmap="YlGnBu", vmin=0.0, vmax=vmax)
+        title = "All topologies" if topology == "all" else str(topology).capitalize()
+        ax.set_title(title)
+        ax.set_xlabel("Persistence/regeneration class")
+        ax.set_ylabel("Brunel class")
+        ax.set_xticks(np.arange(len(pr_categories)), pr_categories)
+        ax.set_yticks(np.arange(len(brunel_categories)), brunel_categories)
+
+        for yi in range(fraction_pivot.shape[0]):
+            for xi in range(fraction_pivot.shape[1]):
+                fraction = float(fraction_pivot.iat[yi, xi])
+                count = int(count_pivot.iat[yi, xi])
+                if count:
+                    ax.text(xi, yi, f"{count}\n{fraction:.0%}", ha="center", va="center", fontsize=8, color="black")
+
+    cbar = fig.colorbar(image, ax=axes_flat.tolist(), shrink=0.86)
+    cbar.set_label("fraction of seed-level regime rows")
+    fig.suptitle("Brunel and persistence/regeneration class co-occurrence", fontsize=13)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
@@ -998,6 +1715,32 @@ def plot_phase_region_grid(
             lambda value: region_to_code.get(str(value), region_to_code["NA"]),
         ).to_numpy(dtype=float)
         axis.imshow(matrix, origin="lower", aspect="auto", cmap=cmap, norm=norm)
+        inactive_pivot = (
+            subset.pivot_table(
+                index=varying_column,
+                columns="input_amplitude",
+                values="is_inactive_monostable_region",
+                aggfunc="first",
+            )
+            .reindex(index=varying_values, columns=amplitudes)
+        )
+        region_pivot = pivot.reindex(index=varying_values, columns=amplitudes)
+        for yi in range(region_pivot.shape[0]):
+            for xi in range(region_pivot.shape[1]):
+                is_monostable = str(region_pivot.iat[yi, xi]) == "monostable"
+                is_inactive = bool(inactive_pivot.iat[yi, xi]) if pd.notna(inactive_pivot.iat[yi, xi]) else False
+                if is_monostable and is_inactive:
+                    axis.add_patch(
+                        Rectangle(
+                            (xi - 0.5, yi - 0.5),
+                            1.0,
+                            1.0,
+                            facecolor="none",
+                            edgecolor=(0.0, 0.0, 0.0, 0.45),
+                            hatch="//",
+                            linewidth=0.25,
+                        )
+                    )
 
         fixed_label = axis_labels[fixed_column]["short"]
         axis.set_title(f"{fixed_label}={format_axis_value(fixed_value)}", fontsize=10)
@@ -1016,17 +1759,301 @@ def plot_phase_region_grid(
         axis.set_yticklabels([format_axis_value(value) for value in varying_values], fontsize=8)
 
     fig.suptitle(
-        f"{str(topology).capitalize()}: phase regions in input amplitude vs {varying_label}\n"
-        f"Panels fix {fixed_label}; oscillatory > bistable > monostable",
+        f"{str(topology).capitalize()}: phase regions in input amplitude vs {varying_label}",
         fontsize=13,
         y=0.98,
     )
+    legend_labels = {"monostable": "active monostable"}
     legend_handles = [
-        Patch(facecolor=BIFURCATION_REGION_COLORS[name], edgecolor="none", label=name)
+        Patch(facecolor=BIFURCATION_REGION_COLORS[name], edgecolor="none", label=legend_labels.get(name, name))
         for name in BIFURCATION_REGION_ORDER
     ]
+    legend_handles.append(
+        Patch(
+            facecolor=BIFURCATION_REGION_COLORS["monostable"],
+            edgecolor=(0.0, 0.0, 0.0, 0.45),
+            hatch="////",
+            label="inactive monostable",
+        )
+    )
     fig.legend(handles=legend_handles, loc="upper right", frameon=False)
     fig.tight_layout(rect=(0.02, 0.03, 0.98, 0.92))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=dpi)
+    plt.close(fig)
+
+
+def plot_bifurcation_brunel_class_grid(
+    brunel_summary: pd.DataFrame,
+    *,
+    topology: str,
+    direction: str,
+    varying_column: str,
+    fixed_column: str,
+    output_path: Path,
+    axis_labels: dict[str, dict[str, str]],
+    dpi: int = 180,
+) -> None:
+    subset = brunel_summary[
+        (brunel_summary["topology"] == topology)
+        & (brunel_summary["sweep_direction"] == direction)
+    ].copy()
+    if subset.empty:
+        return
+
+    varying_values = sorted(subset[varying_column].dropna().unique())
+    fixed_values = sorted(subset[fixed_column].dropna().unique())
+    amplitudes = sorted(subset["input_amplitude"].dropna().unique())
+    if not varying_values or not fixed_values or not amplitudes:
+        return
+
+    n_panels = len(fixed_values)
+    n_panel_rows = 2 if n_panels >= 6 and n_panels % 2 == 0 else 1
+    n_panel_cols = int(np.ceil(n_panels / n_panel_rows))
+    fig, axes = plt.subplots(
+        n_panel_rows,
+        n_panel_cols,
+        figsize=(3.25 * n_panel_cols, 4.3 * n_panel_rows),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    axes_flat = axes.ravel()
+
+    ordered = [*BRUNEL_ORDER, "NA"]
+    cmap = ListedColormap([BRUNEL_COLORS.get(name, "#F0F0F0") for name in ordered])
+    norm = BoundaryNorm(np.arange(-0.5, len(ordered) + 0.5, 1.0), cmap.N)
+    class_to_code = {name: idx for idx, name in enumerate(ordered)}
+
+    for axis, fixed_value in zip(axes_flat, fixed_values):
+        fixed_subset = subset[np.isclose(subset[fixed_column].astype(float), float(fixed_value))]
+        pivot_class = (
+            fixed_subset.pivot_table(
+                index=varying_column,
+                columns="input_amplitude",
+                values="bifurcation_brunel_class_mode",
+                aggfunc="first",
+            )
+            .reindex(index=varying_values, columns=amplitudes)
+        )
+        pivot_fraction = (
+            fixed_subset.pivot_table(
+                index=varying_column,
+                columns="input_amplitude",
+                values="bifurcation_brunel_class_mode_fraction",
+                aggfunc="first",
+            )
+            .reindex(index=varying_values, columns=amplitudes)
+        )
+        matrix = dataframe_map(
+            pivot_class,
+            lambda value: class_to_code.get(str(value), class_to_code["NA"]),
+        ).to_numpy(dtype=float)
+        axis.imshow(matrix, origin="lower", aspect="auto", cmap=cmap, norm=norm)
+
+        fixed_label = axis_labels[fixed_column]["short"]
+        axis.set_title(f"{fixed_label}={format_axis_value(fixed_value)}", fontsize=10)
+        axis.set_xlabel("Input amplitude")
+        axis.set_xticks(range(len(amplitudes)))
+        axis.set_xticklabels([format_axis_value(value) for value in amplitudes], rotation=45, ha="right", fontsize=8)
+
+        for yi in range(pivot_class.shape[0]):
+            for xi in range(pivot_class.shape[1]):
+                label = str(pivot_class.iat[yi, xi])
+                if label == "nan":
+                    label = "NA"
+                if pd.notna(pivot_fraction.iat[yi, xi]):
+                    label = f"{label}\n{float(pivot_fraction.iat[yi, xi]):.0%}"
+                axis.text(xi, yi, label, ha="center", va="center", fontsize=7.5, color="black")
+
+    for axis in axes_flat[len(fixed_values):]:
+        axis.set_visible(False)
+
+    varying_label = axis_labels[varying_column]["label"]
+    fixed_label = axis_labels[fixed_column]["label"]
+    for axis in axes[:, 0]:
+        axis.set_ylabel(varying_label)
+        axis.set_yticks(range(len(varying_values)))
+        axis.set_yticklabels([format_axis_value(value) for value in varying_values], fontsize=8)
+
+    present_classes = set(subset["bifurcation_brunel_class_mode"].dropna().astype(str))
+    legend_handles = [
+        Patch(facecolor=BRUNEL_COLORS.get(name, "#F0F0F0"), edgecolor="black", label=name)
+        for name in ordered
+        if name != "NA" or name in present_classes
+    ]
+    fig.suptitle(
+        f"{str(topology).capitalize()}: Brunel class bifurcation map, {direction} sweep",
+        fontsize=13,
+        y=0.98,
+    )
+    fig.legend(handles=legend_handles, loc="upper right", frameon=False)
+    fig.tight_layout(rect=(0.02, 0.03, 0.98, 0.92))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=dpi)
+    plt.close(fig)
+
+
+def plot_top_correlation_table(
+    top_correlations: pd.DataFrame,
+    *,
+    output_path: Path,
+    title: str,
+    dpi: int = 180,
+) -> None:
+    if top_correlations.empty:
+        return
+
+    display = top_correlations.copy()
+    display["score"] = display["reservoir_score_label"].map(lambda value: textwrap.fill(str(value), width=24))
+    display["metric"] = display["metric_label"].map(lambda value: textwrap.fill(str(value), width=42))
+    display["rho"] = display["correlation"].map(lambda value: f"{float(value):+.3f}")
+    display["n"] = display["n"].astype(int).astype(str)
+    display = display[["score", "rank", "metric", "rho", "n"]]
+
+    n_rows = len(display)
+    fig_height = max(3.0, 0.34 * n_rows + 1.2)
+    fig, ax = plt.subplots(figsize=(12.0, fig_height), constrained_layout=True)
+    ax.axis("off")
+    ax.set_title(title, fontsize=13, pad=12)
+
+    table = ax.table(
+        cellText=display.values,
+        colLabels=["Reservoir score", "Rank", "Regime metric", "Corr", "n"],
+        loc="center",
+        cellLoc="left",
+        colLoc="left",
+        colWidths=[0.22, 0.06, 0.52, 0.10, 0.06],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.5)
+    table.scale(1.0, 1.35)
+    for (row, _col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_text_props(weight="bold")
+            cell.set_facecolor("#EAEAEA")
+        elif row % 2 == 0:
+            cell.set_facecolor("#F7F7F7")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=dpi)
+    plt.close(fig)
+
+
+def plot_top_score_class_distribution_table(
+    distributions: pd.DataFrame,
+    *,
+    output_path: Path,
+    title: str,
+    dpi: int = 180,
+) -> None:
+    if distributions.empty:
+        return
+
+    display = distributions.copy()
+    display["topology"] = display["topology"].astype(str)
+    display["selection"] = display["selection_label"].map(lambda value: textwrap.fill(str(value), width=26))
+    display["class family"] = display["class_family_label"].map(lambda value: textwrap.fill(str(value), width=26))
+    display["fraction"] = display["fraction"].map(lambda value: f"{float(value):.1%}" if pd.notna(value) else "NA")
+    display["count"] = display["count"].astype(int).astype(str)
+    display["total"] = display["total"].astype(int).astype(str)
+    display = display[["topology", "selection", "class family", "frequency_rank", "class", "count", "total", "fraction"]]
+
+    n_rows = len(display)
+    fig_height = max(4.0, 0.32 * n_rows + 1.2)
+    fig, ax = plt.subplots(figsize=(12.0, fig_height), constrained_layout=True)
+    ax.axis("off")
+    ax.set_title(title, fontsize=13, pad=12)
+
+    table = ax.table(
+        cellText=display.values,
+        colLabels=["Topology", "Selection", "Class family", "Rank", "Class", "Count", "Total", "Fraction"],
+        loc="center",
+        cellLoc="left",
+        colLoc="left",
+        colWidths=[0.09, 0.23, 0.21, 0.06, 0.10, 0.08, 0.08, 0.10],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.5)
+    table.scale(1.0, 1.35)
+    for (row, _col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_text_props(weight="bold")
+            cell.set_facecolor("#EAEAEA")
+        elif row % 2 == 0:
+            cell.set_facecolor("#F7F7F7")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=dpi)
+    plt.close(fig)
+
+
+def plot_entropy_null_comparison(
+    entropy_null: pd.DataFrame,
+    *,
+    output_path: Path,
+    title: str,
+    dpi: int = 180,
+) -> None:
+    if entropy_null.empty:
+        return
+
+    data = entropy_null.sort_values(["class_family", "selection_order"]).copy()
+    families = list(data["class_family"].dropna().unique())
+    if not families:
+        return
+
+    fig, axes = plt.subplots(
+        len(families),
+        1,
+        figsize=(11.5, max(3.4, 3.0 * len(families))),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    axes_flat = axes.ravel()
+
+    for ax, family in zip(axes_flat, families):
+        subset = data[data["class_family"] == family].sort_values("selection_order")
+        x = np.arange(len(subset))
+        labels = [textwrap.fill(str(value), width=18) for value in subset["selection_label"]]
+        observed = subset["observed_mean_entropy"].to_numpy(dtype=float)
+        null_mean = subset["null_mean_entropy"].to_numpy(dtype=float)
+        null_low = subset["null_p05_entropy"].to_numpy(dtype=float)
+        null_high = subset["null_p95_entropy"].to_numpy(dtype=float)
+        yerr = np.vstack([null_mean - null_low, null_high - null_mean])
+
+        ax.bar(x - 0.18, observed, width=0.34, color="#4C78A8", label="top-score mean")
+        ax.errorbar(
+            x + 0.18,
+            null_mean,
+            yerr=yerr,
+            fmt="o",
+            color="#E45756",
+            ecolor="#E45756",
+            elinewidth=1.2,
+            capsize=4,
+            label="random mean, 5-95%",
+        )
+        for xi, row in enumerate(subset.itertuples(index=False)):
+            ax.text(
+                xi,
+                min(1.05, max(float(row.observed_mean_entropy), float(row.null_p95_entropy)) + 0.035),
+                f"p={float(row.p_null_ge_observed):.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                rotation=90,
+            )
+
+        ax.set_title(str(subset["class_family_label"].iloc[0]), fontsize=11)
+        ax.set_ylabel("Normalized class entropy")
+        ax.set_ylim(0.0, 1.12)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
+        ax.grid(axis="y", alpha=0.25)
+        ax.legend(loc="upper left", frameon=False)
+
+    fig.suptitle(title, fontsize=13)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
@@ -1146,6 +2173,7 @@ def main() -> int:
             bursty_fano_threshold=args.brunel_bursty_fano_threshold,
         )
     regime["pr_er_class"] = derive_persistence_regen_code(regime)
+    regime = add_binary_class_axes(regime)
     if "brunel.synchronous_by_corr" not in regime.columns:
         corr = pd.to_numeric(regime.get("observation.mean_noise_corr_50ms", 0.0), errors="coerce").fillna(0.0)
         regime["brunel.synchronous_by_corr"] = corr > float(args.brunel_corr_threshold)
@@ -1166,6 +2194,15 @@ def main() -> int:
         & ~coerce_bool(regime["brunel.oscillatory"])
     )
     bifurcation_rows["phase"] = derive_bifurcation_phase(bifurcation_rows)
+    bifurcation_rows["bifurcation_brunel_class"] = derive_brunel_class_from_metrics(
+        bifurcation_rows,
+        cv_threshold=args.brunel_cv_threshold,
+        fano_threshold=args.brunel_fano_threshold,
+        corr_threshold=args.brunel_corr_threshold,
+        peak_ratio_threshold=args.brunel_peak_ratio_threshold,
+        entropy_norm_threshold=args.brunel_entropy_norm_threshold,
+        bursty_fano_threshold=args.brunel_bursty_fano_threshold,
+    )
 
     brunel_summary = majority_summary(
         regime,
@@ -1185,22 +2222,75 @@ def main() -> int:
         value_column="pr_er_class",
         categories=PERSISTENCE_REGEN_ORDER,
     )
+    brunel_pr_cooccurrence = build_brunel_persistence_cooccurrence(regime)
 
     regime_metric_columns = []
     for column in [args.fano_column, *args.regime_metric_columns]:
         if column not in regime_metric_columns:
             regime_metric_columns.append(column)
 
+    composite_source_columns = {}
+    for source_name, source_column, _output_column, _label, _weight in COMPOSITE_SCORE_COMPONENTS:
+        composite_source_columns.setdefault(source_name, []).append(source_column.removesuffix("_mean"))
+    separation_columns = list(dict.fromkeys([*args.separation_columns, *composite_source_columns.get("separation", [])]))
+    memory_columns = list(dict.fromkeys([*args.memory_columns, *composite_source_columns.get("memory", [])]))
+    generalization_columns = list(dict.fromkeys([*args.generalization_columns, *composite_source_columns.get("generalization", [])]))
+
     fano_summary = numeric_summary(regime, value_columns=[args.fano_column])
     regime_metric_summary = numeric_summary(regime, value_columns=regime_metric_columns)
-    separation_summary = numeric_summary(separation, value_columns=args.separation_columns)
-    memory_summary = numeric_summary(memory, value_columns=args.memory_columns)
-    generalization_summary = numeric_summary(generalization, value_columns=args.generalization_columns)
+    separation_summary = numeric_summary(separation, value_columns=separation_columns)
+    memory_summary = numeric_summary(memory, value_columns=memory_columns)
+    generalization_summary = numeric_summary(generalization, value_columns=generalization_columns)
+    composite_summary = build_composite_score_summary(
+        separation_summary=separation_summary,
+        memory_summary=memory_summary,
+        generalization_summary=generalization_summary,
+    )
+    composite_correlations, composite_top_correlations = build_composite_metric_correlations(
+        regime=regime,
+        separation=separation,
+        memory=memory,
+        generalization=generalization,
+        method=args.composite_correlation_method,
+        top_n=args.composite_correlation_top_n,
+    )
+    top_score_conditions, top_score_class_distributions = build_top_score_class_distributions(
+        regime=regime,
+        composite_summary=composite_summary,
+        top_n=args.composite_top_class_count,
+    )
+    condition_class_entropy = build_condition_class_entropy(regime)
+    top_score_entropy_null = build_top_score_entropy_null(
+        composite_summary=composite_summary,
+        condition_entropy=condition_class_entropy,
+        top_n=args.composite_top_class_count,
+        null_iterations=args.composite_entropy_null_iterations,
+        rng_seed=args.composite_entropy_null_seed,
+        correlation_method=args.composite_correlation_method,
+    )
+    binary_condition_class_entropy = build_condition_class_entropy(
+        regime,
+        class_specs=BINARY_CLASS_ENTROPY_SPECS,
+    )
+    binary_top_score_entropy_null = build_top_score_entropy_null(
+        composite_summary=composite_summary,
+        condition_entropy=binary_condition_class_entropy,
+        top_n=args.composite_top_class_count,
+        null_iterations=args.composite_entropy_null_iterations,
+        rng_seed=args.composite_entropy_null_seed,
+        correlation_method=args.composite_correlation_method,
+    )
 
     phase_summary = majority_summary(
         bifurcation_rows,
         value_column="phase",
         categories=BIFURCATION_PHASE_ORDER,
+        group_columns=[*CONDITION_COLUMNS, "sweep_direction", "input_amplitude"],
+    )
+    bifurcation_brunel_summary = majority_summary(
+        bifurcation_rows,
+        value_column="bifurcation_brunel_class",
+        categories=BRUNEL_ORDER,
         group_columns=[*CONDITION_COLUMNS, "sweep_direction", "input_amplitude"],
     )
     phase_summary = phase_summary.rename(
@@ -1247,22 +2337,117 @@ def main() -> int:
         oscillatory_fraction_threshold=args.phase_region_osc_fraction,
         bistable_fraction_threshold=args.phase_region_bistable_fraction,
         bistable_tolerance=args.phase_region_bistable_tolerance,
+        active_fraction_threshold=args.phase_region_active_fraction,
     )
 
     tables_dir = output_dir / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
     brunel_summary.to_csv(tables_dir / "brunel_class_seed_summary.csv", index=False)
     pr_er_summary.to_csv(tables_dir / "persistence_regeneration_seed_summary.csv", index=False)
+    brunel_pr_cooccurrence.to_csv(tables_dir / "brunel_persistence_regeneration_cooccurrence.csv", index=False)
     fano_summary.to_csv(tables_dir / "fano_seed_summary.csv", index=False)
     regime_metric_summary.to_csv(tables_dir / "regime_metric_seed_summary.csv", index=False)
     separation_summary.to_csv(tables_dir / "separation_seed_summary.csv", index=False)
     memory_summary.to_csv(tables_dir / "memory_seed_summary.csv", index=False)
     generalization_summary.to_csv(tables_dir / "generalization_seed_summary.csv", index=False)
+    composite_summary.to_csv(tables_dir / "composite_score_summary.csv", index=False)
+    composite_correlations.to_csv(tables_dir / "composite_component_metric_correlations.csv", index=False)
+    composite_top_correlations.to_csv(tables_dir / "composite_component_top_correlations.csv", index=False)
+    top_score_conditions.to_csv(tables_dir / "top_composite_component_conditions.csv", index=False)
+    top_score_class_distributions.to_csv(tables_dir / "top_composite_component_class_distributions.csv", index=False)
+    condition_class_entropy.to_csv(tables_dir / "condition_class_entropy.csv", index=False)
+    top_score_entropy_null.to_csv(tables_dir / "top_composite_component_entropy_null.csv", index=False)
+    binary_condition_class_entropy.to_csv(tables_dir / "binary_condition_class_entropy.csv", index=False)
+    binary_top_score_entropy_null.to_csv(tables_dir / "binary_top_composite_component_entropy_null.csv", index=False)
     phase_summary.to_csv(tables_dir / "bifurcation_phase_seed_summary.csv", index=False)
+    bifurcation_brunel_summary.to_csv(tables_dir / "bifurcation_brunel_class_seed_summary.csv", index=False)
     threshold_summary.to_csv(tables_dir / "bifurcation_threshold_seed_summary.csv", index=False)
     phase_regions.to_csv(tables_dir / "bifurcation_phase_regions.csv", index=False)
 
     figures_dir = output_dir / "figures"
+    plot_brunel_persistence_cooccurrence(
+        brunel_pr_cooccurrence,
+        output_path=figures_dir / "regime_maps" / "brunel_persistence_regeneration_cooccurrence.png",
+        dpi=args.dpi,
+    )
+    plot_top_correlation_table(
+        composite_top_correlations,
+        output_path=figures_dir / "composite_maps" / "composite_component_top_correlations.png",
+        title=(
+            f"Top {max(1, int(args.composite_correlation_top_n))} "
+            f"{args.composite_correlation_method} correlations with regime metrics"
+        ),
+        dpi=args.dpi,
+    )
+    plot_top_score_class_distribution_table(
+        top_score_class_distributions,
+        output_path=figures_dir / "composite_maps" / "top_composite_component_class_distributions.png",
+        title=f"Class distributions across top {max(1, int(args.composite_top_class_count))} conditions",
+        dpi=args.dpi,
+    )
+    plot_entropy_null_comparison(
+        top_score_entropy_null,
+        output_path=figures_dir / "composite_maps" / "top_composite_component_entropy_null.png",
+        title=(
+            f"Class entropy in top {max(1, int(args.composite_top_class_count))} conditions "
+            "versus random parameter sets"
+        ),
+        dpi=args.dpi,
+    )
+    plot_entropy_null_comparison(
+        binary_top_score_entropy_null,
+        output_path=figures_dir / "composite_maps" / "binary_top_composite_component_entropy_null.png",
+        title=(
+            f"Binary-axis class entropy in top {max(1, int(args.composite_top_class_count))} conditions "
+            "versus random parameter sets"
+        ),
+        dpi=args.dpi,
+    )
+    for topology in sorted(top_score_class_distributions.get("topology", pd.Series(dtype=object)).dropna().unique()):
+        topology_distributions = top_score_class_distributions[
+            top_score_class_distributions["topology"].astype(str) == str(topology)
+        ]
+        plot_top_score_class_distribution_table(
+            topology_distributions,
+            output_path=figures_dir
+            / "composite_maps"
+            / f"{safe_token(str(topology))}_top_composite_component_class_distributions.png",
+            title=(
+                f"{str(topology).capitalize()}: class distributions across top "
+                f"{max(1, int(args.composite_top_class_count))} conditions"
+            ),
+            dpi=args.dpi,
+        )
+    for topology in sorted(top_score_entropy_null.get("topology", pd.Series(dtype=object)).dropna().unique()):
+        topology_entropy = top_score_entropy_null[
+            top_score_entropy_null["topology"].astype(str) == str(topology)
+        ]
+        plot_entropy_null_comparison(
+            topology_entropy,
+            output_path=figures_dir
+            / "composite_maps"
+            / f"{safe_token(str(topology))}_top_composite_component_entropy_null.png",
+            title=(
+                f"{str(topology).capitalize()}: class entropy in top "
+                f"{max(1, int(args.composite_top_class_count))} conditions versus random parameter sets"
+            ),
+            dpi=args.dpi,
+        )
+    for topology in sorted(binary_top_score_entropy_null.get("topology", pd.Series(dtype=object)).dropna().unique()):
+        topology_entropy = binary_top_score_entropy_null[
+            binary_top_score_entropy_null["topology"].astype(str) == str(topology)
+        ]
+        plot_entropy_null_comparison(
+            topology_entropy,
+            output_path=figures_dir
+            / "composite_maps"
+            / f"{safe_token(str(topology))}_binary_top_composite_component_entropy_null.png",
+            title=(
+                f"{str(topology).capitalize()}: binary-axis class entropy in top "
+                f"{max(1, int(args.composite_top_class_count))} conditions versus random parameter sets"
+            ),
+            dpi=args.dpi,
+        )
     for topology in sorted(regime["topology"].dropna().unique()):
         topology_axis_labels = axis_labels_for_topology(
             axis_labels,
@@ -1297,6 +2482,21 @@ def main() -> int:
             output_path=figures_dir / "regime_maps" / f"{topology}_persistence_regeneration_map.png",
             row_label=topology_axis_labels["j_gain"]["label"],
             col_label=topology_axis_labels["g_gain"]["label"],
+            dpi=args.dpi,
+        )
+
+        composite_top = composite_summary[composite_summary["topology"] == topology]
+        plot_numeric_heatmap(
+            composite_top,
+            value_column="composite_score",
+            title=f"{str(topology).capitalize()}: composite reservoir score",
+            output_path=figures_dir / "composite_maps" / f"{topology}_composite_score_heatmap.png",
+            row_label=topology_axis_labels["j_gain"]["label"],
+            col_label=topology_axis_labels["g_gain"]["label"],
+            cmap="viridis",
+            vmin=0.0,
+            vmax=composite_score_weight_sum(),
+            colorbar_label="weighted min-max normalized score",
             dpi=args.dpi,
         )
 
@@ -1442,6 +2642,33 @@ def main() -> int:
             output_path=figures_dir / "bifurcation_phase_regions" / f"{topology}_phase_regions_vs_{row_token}.png",
             dpi=args.dpi,
         )
+        brunel_bifurcation_top = bifurcation_brunel_summary[bifurcation_brunel_summary["topology"] == topology]
+        brunel_directions = sorted(brunel_bifurcation_top["sweep_direction"].dropna().unique())
+        for direction in brunel_directions:
+            plot_bifurcation_brunel_class_grid(
+                bifurcation_brunel_summary,
+                topology=topology,
+                direction=direction,
+                varying_column="g_gain",
+                fixed_column="j_gain",
+                axis_labels=topology_axis_labels,
+                output_path=figures_dir
+                / "bifurcation_brunel_class"
+                / f"{topology}_{direction}_brunel_class_vs_{col_token}.png",
+                dpi=args.dpi,
+            )
+            plot_bifurcation_brunel_class_grid(
+                bifurcation_brunel_summary,
+                topology=topology,
+                direction=direction,
+                varying_column="j_gain",
+                fixed_column="g_gain",
+                axis_labels=topology_axis_labels,
+                output_path=figures_dir
+                / "bifurcation_brunel_class"
+                / f"{topology}_{direction}_brunel_class_vs_{row_token}.png",
+                dpi=args.dpi,
+            )
 
     save_summary_md(
         output_dir,
@@ -1467,6 +2694,7 @@ def main() -> int:
             "Generalization": generalization_summary,
             "Bifurcation thresholds": threshold_summary,
             "Bifurcation phase regions": phase_regions,
+            "Bifurcation Brunel classes": bifurcation_brunel_summary,
         },
     )
 
