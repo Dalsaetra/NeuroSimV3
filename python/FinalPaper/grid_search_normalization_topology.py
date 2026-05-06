@@ -82,7 +82,7 @@ TYPE_FRACTIONS = {"ss4": 0.8, "b": 0.2}
 INHIBITORY_TYPES = ("b",)
 WEIGHT_DIST_BY_NTYPE = {"ss4": "lognormal", "b": "normal"}
 P0_BY_PAIR = {"EE": 0.5, "EI": 0.5, "IE": 0.5, "II": 0.5}
-LAMBDA_BY_PRECLASS = {"E": 0.2, "I": 0.2}
+LAMBDA_BY_PRECLASS = {"E": 0.4, "I": 0.1}
 OUTDEGREE_CONFIG_BY_TYPE = {
     "ss4": {"dist": "lognormal", "params": (2.65, 0.8)},
     "b": {"dist": "neg-bin", "params": (50, 40)},
