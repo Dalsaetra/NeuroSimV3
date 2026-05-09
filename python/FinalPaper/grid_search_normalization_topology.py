@@ -66,14 +66,19 @@ from src.neuron_population import NeuronPopulation
 from src.overhead import Simulation
 
 
+J_BASE_FIXED = 1.0
+G_BASE_FIXED = 1.0
+J_BASE_SPATIAL = 1.0
+G_BASE_SPATIAL = 1.0
+
 TOPOLOGY_BASE_NORMALIZATION = {
     "fixed": {
-        "normalize_target_in_E": {"ss4": 50.0, "b": 20.0},
-        "normalize_target_in_I": {"ss4": 250.0, "b": 25.0},
+        "normalize_target_in_E": {"ss4": 50.0 * J_BASE_FIXED, "b": 20.0 * J_BASE_FIXED},
+        "normalize_target_in_I": {"ss4": 250.0 * G_BASE_FIXED, "b": 25.0 * G_BASE_FIXED},
     },
     "spatial": {
-        "normalize_target_in_E": {"ss4": 50.0, "b": 10.0},
-        "normalize_target_in_I": {"ss4": 500.0, "b": 50.0},
+        "normalize_target_in_E": {"ss4": 50.0 * J_BASE_SPATIAL, "b": 10.0 * J_BASE_SPATIAL},
+        "normalize_target_in_I": {"ss4": 500.0 * G_BASE_SPATIAL, "b": 50.0 * G_BASE_SPATIAL},
     },
 }
 
