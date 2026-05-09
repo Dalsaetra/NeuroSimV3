@@ -35,6 +35,12 @@ from matplotlib.patches import Patch, Rectangle
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RESULTS_DIR = PROJECT_ROOT / "FinalPaper" / "results" / "normalization_grid"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "FinalPaper" / "results" / "normalization_grid_analysis"
+HEATMAP_TITLE_FONT_SIZE = 14
+HEATMAP_TEXT_FONT_SIZE = HEATMAP_TITLE_FONT_SIZE
+HEATMAP_CELL_FONT_SIZE = 10
+CLASS_MAP_CELL_FONT_SIZE = 10
+HEATMAP_FIGSIZE = (8.2, 6.4)
+CLASS_MAP_FIGSIZE = (8.6, 6.6)
 
 GROUP_COLUMNS = ["topology", "j_gain", "g_gain"]
 CONDITION_COLUMNS = [*GROUP_COLUMNS]
@@ -265,7 +271,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--composite-entropy-null-iterations",
         type=int,
-        default=5000,
+        default=20000,
         help="Random top-N draws used for the class-entropy null comparison.",
     )
     parser.add_argument(
@@ -1186,7 +1192,7 @@ def recompute_brunel_labels(
     synchronous_by_corr = corr > float(corr_threshold)
     oscillatory = ((peak_ratio > float(peak_ratio_threshold)) & (entropy_norm < float(entropy_norm_threshold)))
     oscillatory = oscillatory | (peak_ratio > float(peak_ratio_threshold + 100.0))
-    oscillatory = oscillatory | (entropy_norm < float(entropy_norm_threshold - 0.1))
+    oscillatory = oscillatory | (entropy_norm < float(entropy_norm_threshold - 0.05))
     synchronous = synchronous_by_corr | oscillatory
     bursty_individual = fano > float(bursty_fano_threshold)
 
@@ -1366,22 +1372,24 @@ def plot_numeric_heatmap(
     if pivot.empty:
         return
 
-    fig, ax = plt.subplots(figsize=(7.0, 5.6), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=HEATMAP_FIGSIZE, constrained_layout=True)
     image = ax.imshow(pivot.to_numpy(dtype=float), origin="lower", aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
-    ax.set_title(title)
-    ax.set_xlabel(col_label)
-    ax.set_ylabel(row_label)
+    ax.set_title(title, fontsize=HEATMAP_TITLE_FONT_SIZE)
+    ax.set_xlabel(col_label, fontsize=HEATMAP_TEXT_FONT_SIZE)
+    ax.set_ylabel(row_label, fontsize=HEATMAP_TEXT_FONT_SIZE)
     ax.set_xticks(np.arange(pivot.shape[1]), [format_axis_value(v) for v in pivot.columns])
     ax.set_yticks(np.arange(pivot.shape[0]), [format_axis_value(v) for v in pivot.index])
+    ax.tick_params(axis="both", labelsize=HEATMAP_TEXT_FONT_SIZE)
 
     for yi in range(pivot.shape[0]):
         for xi in range(pivot.shape[1]):
             value = pivot.iat[yi, xi]
             if pd.notna(value):
-                ax.text(xi, yi, format_metric_value(value), ha="center", va="center", fontsize=8, color="black")
+                ax.text(xi, yi, format_metric_value(value), ha="center", va="center", fontsize=HEATMAP_CELL_FONT_SIZE, color="black")
 
     cbar = fig.colorbar(image, ax=ax, shrink=0.9)
-    cbar.set_label(colorbar_label or pretty_label(value_column))
+    cbar.set_label(colorbar_label or pretty_label(value_column), fontsize=HEATMAP_TEXT_FONT_SIZE)
+    cbar.ax.tick_params(labelsize=HEATMAP_TEXT_FONT_SIZE)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
@@ -1463,13 +1471,14 @@ def plot_categorical_heatmap(
     cmap = ListedColormap([colors.get(category, "#F0F0F0") for category in ordered_categories])
     norm = BoundaryNorm(np.arange(-0.5, len(ordered_categories) + 0.5, 1.0), cmap.N)
 
-    fig, ax = plt.subplots(figsize=(7.0, 5.6), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=CLASS_MAP_FIGSIZE, constrained_layout=True)
     ax.imshow(numeric.to_numpy(dtype=float), origin="lower", aspect="auto", cmap=cmap, norm=norm)
-    ax.set_title(title)
-    ax.set_xlabel(col_label)
-    ax.set_ylabel(row_label)
+    ax.set_title(title, fontsize=HEATMAP_TITLE_FONT_SIZE)
+    ax.set_xlabel(col_label, fontsize=HEATMAP_TEXT_FONT_SIZE)
+    ax.set_ylabel(row_label, fontsize=HEATMAP_TEXT_FONT_SIZE)
     ax.set_xticks(np.arange(pivot_cat.shape[1]), [format_axis_value(v) for v in pivot_cat.columns])
     ax.set_yticks(np.arange(pivot_cat.shape[0]), [format_axis_value(v) for v in pivot_cat.index])
+    ax.tick_params(axis="both", labelsize=HEATMAP_TEXT_FONT_SIZE)
 
     has_hatch = False
     if pivot_hatch is not None:
@@ -1496,7 +1505,7 @@ def plot_categorical_heatmap(
             label = str(pivot_cat.iat[yi, xi])
             if pivot_frac is not None and pd.notna(pivot_frac.iat[yi, xi]):
                 label = f"{label}\n{float(pivot_frac.iat[yi, xi]):.0%}"
-            ax.text(xi, yi, label, ha="center", va="center", fontsize=8, color="black")
+            ax.text(xi, yi, label, ha="center", va="center", fontsize=CLASS_MAP_CELL_FONT_SIZE, color="black")
 
     present_categories = set(pivot_cat.to_numpy().ravel().astype(str))
     handles = [
@@ -1506,7 +1515,7 @@ def plot_categorical_heatmap(
     ]
     if has_hatch and hatch_label:
         handles.append(Patch(facecolor="white", edgecolor=(0.0, 0.0, 0.0, 0.45), hatch="//////", label=hatch_label, alpha=0.55))
-    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False)
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False, fontsize=HEATMAP_TEXT_FONT_SIZE)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
@@ -1546,7 +1555,7 @@ def plot_brunel_persistence_cooccurrence(
     fig, axes = plt.subplots(
         1,
         n_panels,
-        figsize=(4.6 * n_panels, 4.7),
+        figsize=(5.2 * n_panels, 5.2),
         squeeze=False,
         constrained_layout=True,
     )
@@ -1575,22 +1584,24 @@ def plot_brunel_persistence_cooccurrence(
         )
         image = ax.imshow(fraction_pivot.to_numpy(dtype=float), origin="lower", aspect="auto", cmap="YlGnBu", vmin=0.0, vmax=vmax)
         title = "All topologies" if topology == "all" else str(topology).capitalize()
-        ax.set_title(title)
-        ax.set_xlabel("Persistence/regeneration class")
-        ax.set_ylabel("Brunel class")
+        ax.set_title(title, fontsize=HEATMAP_TITLE_FONT_SIZE)
+        ax.set_xlabel("Persistence/regeneration class", fontsize=HEATMAP_TEXT_FONT_SIZE)
+        ax.set_ylabel("Brunel class", fontsize=HEATMAP_TEXT_FONT_SIZE)
         ax.set_xticks(np.arange(len(pr_categories)), pr_categories)
         ax.set_yticks(np.arange(len(brunel_categories)), brunel_categories)
+        ax.tick_params(axis="both", labelsize=HEATMAP_TEXT_FONT_SIZE)
 
         for yi in range(fraction_pivot.shape[0]):
             for xi in range(fraction_pivot.shape[1]):
                 fraction = float(fraction_pivot.iat[yi, xi])
                 count = int(count_pivot.iat[yi, xi])
                 if count:
-                    ax.text(xi, yi, f"{count}\n{fraction:.0%}", ha="center", va="center", fontsize=8, color="black")
+                    ax.text(xi, yi, f"{count}\n{fraction:.0%}", ha="center", va="center", fontsize=CLASS_MAP_CELL_FONT_SIZE, color="black")
 
     cbar = fig.colorbar(image, ax=axes_flat.tolist(), shrink=0.86)
-    cbar.set_label("fraction of seed-level regime rows")
-    fig.suptitle("Brunel and persistence/regeneration class co-occurrence", fontsize=13)
+    cbar.set_label("fraction of seed-level regime rows", fontsize=HEATMAP_TEXT_FONT_SIZE)
+    cbar.ax.tick_params(labelsize=HEATMAP_TEXT_FONT_SIZE)
+    fig.suptitle("Brunel and persistence/regeneration class co-occurrence", fontsize=HEATMAP_TITLE_FONT_SIZE)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
@@ -1631,31 +1642,33 @@ def plot_phase_slice(
     cmap = ListedColormap([BIFURCATION_PHASE_COLORS.get(category, "#F0F0F0") for category in ordered_categories])
     norm = BoundaryNorm(np.arange(-0.5, len(ordered_categories) + 0.5, 1.0), cmap.N)
 
-    fig, ax = plt.subplots(figsize=(8.2, 5.4), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(9.0, 6.2), constrained_layout=True)
     ax.imshow(numeric.to_numpy(dtype=float), origin="lower", aspect="auto", cmap=cmap, norm=norm)
     fixed_label = axis_labels[fixed_column]["short"]
     varying_label = axis_labels[varying_column]["label"]
     ax.set_title(
         f"{str(topology).capitalize()} bifurcation phase, {direction}, "
-        f"{fixed_label}={format_axis_value(fixed_value)}"
+        f"{fixed_label}={format_axis_value(fixed_value)}",
+        fontsize=HEATMAP_TITLE_FONT_SIZE,
     )
-    ax.set_xlabel("Input amplitude")
-    ax.set_ylabel(varying_label)
+    ax.set_xlabel("Input amplitude", fontsize=HEATMAP_TEXT_FONT_SIZE)
+    ax.set_ylabel(varying_label, fontsize=HEATMAP_TEXT_FONT_SIZE)
     ax.set_xticks(np.arange(pivot_cat.shape[1]), [format_axis_value(v) for v in pivot_cat.columns])
     ax.set_yticks(np.arange(pivot_cat.shape[0]), [format_axis_value(v) for v in pivot_cat.index])
+    ax.tick_params(axis="both", labelsize=HEATMAP_TEXT_FONT_SIZE)
 
     for yi in range(pivot_cat.shape[0]):
         for xi in range(pivot_cat.shape[1]):
             label = str(pivot_cat.iat[yi, xi])
             if pd.notna(pivot_frac.iat[yi, xi]):
                 label = f"{label}\n{float(pivot_frac.iat[yi, xi]):.0%}"
-            ax.text(xi, yi, label, ha="center", va="center", fontsize=8)
+            ax.text(xi, yi, label, ha="center", va="center", fontsize=CLASS_MAP_CELL_FONT_SIZE)
 
     handles = [
         Patch(facecolor=BIFURCATION_PHASE_COLORS.get(category, "#F0F0F0"), edgecolor="black", label=category)
         for category in ordered_categories
     ]
-    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False)
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False, fontsize=HEATMAP_TEXT_FONT_SIZE)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
@@ -1687,7 +1700,7 @@ def plot_phase_region_grid(
     fig, axes = plt.subplots(
         n_panel_rows,
         n_panel_cols,
-        figsize=(3.25 * n_panel_cols, 4.3 * n_panel_rows),
+        figsize=(3.7 * n_panel_cols + 1.8, 4.8 * n_panel_rows),
         sharex=True,
         sharey=True,
         squeeze=False,
@@ -1743,24 +1756,24 @@ def plot_phase_region_grid(
                     )
 
         fixed_label = axis_labels[fixed_column]["short"]
-        axis.set_title(f"{fixed_label}={format_axis_value(fixed_value)}", fontsize=10)
-        axis.set_xlabel("Input amplitude")
+        axis.set_title(f"{fixed_label}={format_axis_value(fixed_value)}", fontsize=HEATMAP_TITLE_FONT_SIZE)
+        axis.set_xlabel("Input amplitude", fontsize=HEATMAP_TEXT_FONT_SIZE)
         axis.set_xticks(range(len(amplitudes)))
-        axis.set_xticklabels([format_axis_value(value) for value in amplitudes], rotation=45, ha="right", fontsize=8)
+        axis.set_xticklabels([format_axis_value(value) for value in amplitudes], rotation=45, ha="right", fontsize=HEATMAP_TEXT_FONT_SIZE)
+        axis.tick_params(axis="both", labelsize=HEATMAP_TEXT_FONT_SIZE)
 
     for axis in axes_flat[len(fixed_values):]:
         axis.set_visible(False)
 
     varying_label = axis_labels[varying_column]["label"]
-    fixed_label = axis_labels[fixed_column]["label"]
     for axis in axes[:, 0]:
-        axis.set_ylabel(varying_label)
+        axis.set_ylabel(varying_label, fontsize=HEATMAP_TEXT_FONT_SIZE)
         axis.set_yticks(range(len(varying_values)))
-        axis.set_yticklabels([format_axis_value(value) for value in varying_values], fontsize=8)
+        axis.set_yticklabels([format_axis_value(value) for value in varying_values], fontsize=HEATMAP_TEXT_FONT_SIZE)
 
     fig.suptitle(
-        f"{str(topology).capitalize()}: phase regions in input amplitude vs {varying_label}",
-        fontsize=13,
+        str(topology).capitalize(),
+        fontsize=HEATMAP_TITLE_FONT_SIZE,
         y=0.98,
     )
     legend_labels = {"monostable": "active monostable"}
@@ -1776,8 +1789,172 @@ def plot_phase_region_grid(
             label="inactive monostable",
         )
     )
-    fig.legend(handles=legend_handles, loc="upper right", frameon=False)
-    fig.tight_layout(rect=(0.02, 0.03, 0.98, 0.92))
+    fig.legend(
+        handles=legend_handles,
+        loc="center left",
+        bbox_to_anchor=(0.84, 0.52),
+        frameon=False,
+        fontsize=HEATMAP_TEXT_FONT_SIZE,
+    )
+    fig.tight_layout(rect=(0.02, 0.03, 0.82, 0.92))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=dpi)
+    plt.close(fig)
+
+
+def plot_combined_phase_region_grid(
+    phase_regions: pd.DataFrame,
+    *,
+    topologies: list[str],
+    varying_column: str,
+    fixed_column: str,
+    output_path: Path,
+    axis_labels: dict[str, dict[str, str]],
+    sweep_name: str,
+    dpi: int = 180,
+) -> None:
+    topologies = [str(topology) for topology in topologies if pd.notna(topology)]
+    topo_regions = phase_regions[phase_regions["topology"].astype(str).isin(topologies)].copy()
+    if topo_regions.empty or not topologies:
+        return
+
+    topology_specs = []
+    for topology in topologies:
+        topology_subset = topo_regions[topo_regions["topology"].astype(str) == topology].copy()
+        varying_values = sorted(topology_subset[varying_column].dropna().unique())
+        fixed_values = sorted(topology_subset[fixed_column].dropna().unique())
+        amplitudes = sorted(topology_subset["input_amplitude"].dropna().unique())
+        if not varying_values or not fixed_values or not amplitudes:
+            continue
+        topology_specs.append(
+            {
+                "topology": topology,
+                "subset": topology_subset,
+                "varying_values": varying_values,
+                "fixed_values": fixed_values,
+                "amplitudes": amplitudes,
+                "axis_labels": axis_labels_for_topology(
+                    axis_labels,
+                    sweep_name=sweep_name,
+                    topology=topology,
+                ),
+            }
+        )
+    if not topology_specs:
+        return
+
+    max_fixed_count = max(len(spec["fixed_values"]) for spec in topology_specs)
+
+    fig, axes = plt.subplots(
+        len(topology_specs),
+        max_fixed_count,
+        figsize=(3.5 * max_fixed_count + 1.8, 4.4 * len(topology_specs)),
+        sharex=False,
+        sharey=False,
+        squeeze=False,
+    )
+
+    ordered = [*BIFURCATION_REGION_ORDER, "NA"]
+    cmap = ListedColormap([BIFURCATION_REGION_COLORS[name] for name in ordered])
+    norm = BoundaryNorm(np.arange(-0.5, len(ordered) + 0.5, 1.0), cmap.N)
+    region_to_code = {name: idx for idx, name in enumerate(ordered)}
+
+    for row_idx, spec in enumerate(topology_specs):
+        topology = spec["topology"]
+        topology_subset = spec["subset"]
+        varying_values = spec["varying_values"]
+        fixed_values = spec["fixed_values"]
+        amplitudes = spec["amplitudes"]
+        topology_axis_labels = spec["axis_labels"]
+        fixed_label = topology_axis_labels[fixed_column]["short"]
+        varying_label = topology_axis_labels[varying_column]["label"]
+
+        for col_idx in range(max_fixed_count):
+            axis = axes[row_idx, col_idx]
+            if col_idx >= len(fixed_values):
+                axis.set_visible(False)
+                continue
+
+            fixed_value = fixed_values[col_idx]
+            subset = topology_subset[np.isclose(topology_subset[fixed_column].astype(float), float(fixed_value))]
+            pivot = (
+                subset.pivot_table(
+                    index=varying_column,
+                    columns="input_amplitude",
+                    values="phase_region",
+                    aggfunc="first",
+                )
+                .reindex(index=varying_values, columns=amplitudes)
+            )
+            matrix = dataframe_map(
+                pivot,
+                lambda value: region_to_code.get(str(value), region_to_code["NA"]),
+            ).to_numpy(dtype=float)
+            axis.imshow(matrix, origin="lower", aspect="auto", cmap=cmap, norm=norm)
+            axis.set_box_aspect(1)
+
+            inactive_pivot = (
+                subset.pivot_table(
+                    index=varying_column,
+                    columns="input_amplitude",
+                    values="is_inactive_monostable_region",
+                    aggfunc="first",
+                )
+                .reindex(index=varying_values, columns=amplitudes)
+            )
+            for yi in range(pivot.shape[0]):
+                for xi in range(pivot.shape[1]):
+                    is_monostable = str(pivot.iat[yi, xi]) == "monostable"
+                    is_inactive = bool(inactive_pivot.iat[yi, xi]) if pd.notna(inactive_pivot.iat[yi, xi]) else False
+                    if is_monostable and is_inactive:
+                        axis.add_patch(
+                            Rectangle(
+                                (xi - 0.5, yi - 0.5),
+                                1.0,
+                                1.0,
+                                facecolor="none",
+                                edgecolor=(0.0, 0.0, 0.0, 0.45),
+                                hatch="//",
+                                linewidth=0.25,
+                            )
+                        )
+
+            if col_idx == 0:
+                axis.set_ylabel(f"{topology.capitalize()}\n{varying_label}", fontsize=HEATMAP_TEXT_FONT_SIZE)
+            axis.set_title(f"{fixed_label}={format_axis_value(fixed_value)}", fontsize=HEATMAP_TITLE_FONT_SIZE)
+            axis.set_yticks(range(len(varying_values)))
+            axis.set_yticklabels([format_axis_value(value) for value in varying_values], fontsize=HEATMAP_TEXT_FONT_SIZE)
+            axis.set_xlabel("Input amplitude", fontsize=HEATMAP_TEXT_FONT_SIZE)
+            axis.set_xticks(range(len(amplitudes)))
+            axis.set_xticklabels(
+                [format_axis_value(value) for value in amplitudes],
+                rotation=45,
+                ha="right",
+                fontsize=HEATMAP_TEXT_FONT_SIZE,
+            )
+            axis.tick_params(axis="both", labelsize=HEATMAP_TEXT_FONT_SIZE)
+
+    legend_labels = {"monostable": "active monostable"}
+    legend_handles = [
+        Patch(facecolor=BIFURCATION_REGION_COLORS[name], edgecolor="none", label=legend_labels.get(name, name))
+        for name in BIFURCATION_REGION_ORDER
+    ]
+    legend_handles.append(
+        Patch(
+            facecolor=BIFURCATION_REGION_COLORS["monostable"],
+            edgecolor=(0.0, 0.0, 0.0, 0.45),
+            hatch="////",
+            label="inactive monostable",
+        )
+    )
+    fig.legend(
+        handles=legend_handles,
+        loc="center left",
+        bbox_to_anchor=(0.84, 0.52),
+        frameon=False,
+        fontsize=HEATMAP_TEXT_FONT_SIZE,
+    )
+    fig.tight_layout(rect=(0.02, 0.03, 0.82, 0.96))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
@@ -1813,7 +1990,7 @@ def plot_bifurcation_brunel_class_grid(
     fig, axes = plt.subplots(
         n_panel_rows,
         n_panel_cols,
-        figsize=(3.25 * n_panel_cols, 4.3 * n_panel_rows),
+        figsize=(3.7 * n_panel_cols, 4.8 * n_panel_rows),
         sharex=True,
         sharey=True,
         squeeze=False,
@@ -1836,15 +2013,6 @@ def plot_bifurcation_brunel_class_grid(
             )
             .reindex(index=varying_values, columns=amplitudes)
         )
-        pivot_fraction = (
-            fixed_subset.pivot_table(
-                index=varying_column,
-                columns="input_amplitude",
-                values="bifurcation_brunel_class_mode_fraction",
-                aggfunc="first",
-            )
-            .reindex(index=varying_values, columns=amplitudes)
-        )
         matrix = dataframe_map(
             pivot_class,
             lambda value: class_to_code.get(str(value), class_to_code["NA"]),
@@ -1852,19 +2020,11 @@ def plot_bifurcation_brunel_class_grid(
         axis.imshow(matrix, origin="lower", aspect="auto", cmap=cmap, norm=norm)
 
         fixed_label = axis_labels[fixed_column]["short"]
-        axis.set_title(f"{fixed_label}={format_axis_value(fixed_value)}", fontsize=10)
-        axis.set_xlabel("Input amplitude")
+        axis.set_title(f"{fixed_label}={format_axis_value(fixed_value)}", fontsize=HEATMAP_TITLE_FONT_SIZE)
+        axis.set_xlabel("Input amplitude", fontsize=HEATMAP_TEXT_FONT_SIZE)
         axis.set_xticks(range(len(amplitudes)))
-        axis.set_xticklabels([format_axis_value(value) for value in amplitudes], rotation=45, ha="right", fontsize=8)
-
-        for yi in range(pivot_class.shape[0]):
-            for xi in range(pivot_class.shape[1]):
-                label = str(pivot_class.iat[yi, xi])
-                if label == "nan":
-                    label = "NA"
-                if pd.notna(pivot_fraction.iat[yi, xi]):
-                    label = f"{label}\n{float(pivot_fraction.iat[yi, xi]):.0%}"
-                axis.text(xi, yi, label, ha="center", va="center", fontsize=7.5, color="black")
+        axis.set_xticklabels([format_axis_value(value) for value in amplitudes], rotation=45, ha="right", fontsize=HEATMAP_TEXT_FONT_SIZE)
+        axis.tick_params(axis="both", labelsize=HEATMAP_TEXT_FONT_SIZE)
 
     for axis in axes_flat[len(fixed_values):]:
         axis.set_visible(False)
@@ -1872,9 +2032,9 @@ def plot_bifurcation_brunel_class_grid(
     varying_label = axis_labels[varying_column]["label"]
     fixed_label = axis_labels[fixed_column]["label"]
     for axis in axes[:, 0]:
-        axis.set_ylabel(varying_label)
+        axis.set_ylabel(varying_label, fontsize=HEATMAP_TEXT_FONT_SIZE)
         axis.set_yticks(range(len(varying_values)))
-        axis.set_yticklabels([format_axis_value(value) for value in varying_values], fontsize=8)
+        axis.set_yticklabels([format_axis_value(value) for value in varying_values], fontsize=HEATMAP_TEXT_FONT_SIZE)
 
     present_classes = set(subset["bifurcation_brunel_class_mode"].dropna().astype(str))
     legend_handles = [
@@ -1884,10 +2044,10 @@ def plot_bifurcation_brunel_class_grid(
     ]
     fig.suptitle(
         f"{str(topology).capitalize()}: Brunel class bifurcation map, {direction} sweep",
-        fontsize=13,
+        fontsize=HEATMAP_TITLE_FONT_SIZE,
         y=0.98,
     )
-    fig.legend(handles=legend_handles, loc="upper right", frameon=False)
+    fig.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=HEATMAP_TEXT_FONT_SIZE)
     fig.tight_layout(rect=(0.02, 0.03, 0.98, 0.92))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi)
@@ -1998,62 +2158,99 @@ def plot_entropy_null_comparison(
     if entropy_null.empty:
         return
 
-    data = entropy_null.sort_values(["class_family", "selection_order"]).copy()
+    data = entropy_null.sort_values(["class_family", "selection_order", "topology"]).copy()
     families = list(data["class_family"].dropna().unique())
     if not families:
         return
+    topology_palette = {
+        "spatial": "#4C78A8",
+        "fixed": "#F58518",
+        "nonspatial": "#F58518",
+        "random": "#54A24B",
+        "graph": "#B279A2",
+    }
 
     fig, axes = plt.subplots(
         len(families),
         1,
-        figsize=(11.5, max(3.4, 3.0 * len(families))),
+        figsize=(11.5, max(4.8, 4.2 * len(families))),
         squeeze=False,
         constrained_layout=True,
     )
     axes_flat = axes.ravel()
 
     for ax, family in zip(axes_flat, families):
-        subset = data[data["class_family"] == family].sort_values("selection_order")
-        x = np.arange(len(subset))
-        labels = [textwrap.fill(str(value), width=18) for value in subset["selection_label"]]
-        observed = subset["observed_mean_entropy"].to_numpy(dtype=float)
-        null_mean = subset["null_mean_entropy"].to_numpy(dtype=float)
-        null_low = subset["null_p05_entropy"].to_numpy(dtype=float)
-        null_high = subset["null_p95_entropy"].to_numpy(dtype=float)
-        yerr = np.vstack([null_mean - null_low, null_high - null_mean])
-
-        ax.bar(x - 0.18, observed, width=0.34, color="#4C78A8", label="top-score mean")
-        ax.errorbar(
-            x + 0.18,
-            null_mean,
-            yerr=yerr,
-            fmt="o",
-            color="#E45756",
-            ecolor="#E45756",
-            elinewidth=1.2,
-            capsize=4,
-            label="random mean, 5-95%",
+        subset = data[data["class_family"] == family].sort_values(["selection_order", "topology"])
+        selection_rows = (
+            subset[["selection_order", "selection_label"]]
+            .drop_duplicates()
+            .sort_values("selection_order")
         )
-        for xi, row in enumerate(subset.itertuples(index=False)):
-            ax.text(
-                xi,
-                min(1.05, max(float(row.observed_mean_entropy), float(row.null_p95_entropy)) + 0.035),
-                f"p={float(row.p_null_ge_observed):.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=8,
-                rotation=90,
+        x = np.arange(len(selection_rows))
+        x_by_order = dict(zip(selection_rows["selection_order"], x))
+        labels = [textwrap.fill(str(value), width=18) for value in selection_rows["selection_label"]]
+        topologies = list(subset["topology"].dropna().astype(str).drop_duplicates())
+        if not topologies:
+            topologies = [""]
+        bar_width = min(0.32, 0.72 / max(1, len(topologies)))
+        offsets = (np.arange(len(topologies)) - (len(topologies) - 1) / 2.0) * (bar_width * 1.25)
+
+        for topology_idx, topology in enumerate(topologies):
+            topology_subset = subset[subset["topology"].astype(str) == str(topology)]
+            xpos = np.asarray(
+                [x_by_order[row.selection_order] + offsets[topology_idx] for row in topology_subset.itertuples(index=False)],
+                dtype=float,
             )
+            observed = topology_subset["observed_mean_entropy"].to_numpy(dtype=float)
+            null_mean = topology_subset["null_mean_entropy"].to_numpy(dtype=float)
+            null_low = topology_subset["null_p05_entropy"].to_numpy(dtype=float)
+            null_high = topology_subset["null_p95_entropy"].to_numpy(dtype=float)
+            yerr = np.vstack([null_mean - null_low, null_high - null_mean])
+            color = topology_palette.get(str(topology).lower(), f"C{topology_idx}")
 
-        ax.set_title(str(subset["class_family_label"].iloc[0]), fontsize=11)
-        ax.set_ylabel("Normalized class entropy")
-        ax.set_ylim(0.0, 1.12)
+            ax.bar(
+                xpos,
+                observed,
+                width=bar_width,
+                color=color,
+                alpha=0.82,
+                label=f"{topology} top-score mean" if topology else "top-score mean",
+            )
+            ax.errorbar(
+                xpos,
+                null_mean,
+                yerr=yerr,
+                fmt="o",
+                color=color,
+                ecolor=color,
+                markerfacecolor="white",
+                markeredgewidth=1.3,
+                elinewidth=1.2,
+                capsize=4,
+                label="random mean, 5-95%" if topology_idx == 0 else None,
+            )
+            for xi, row in zip(xpos, topology_subset.itertuples(index=False)):
+                ax.text(
+                    xi + bar_width * 0.08,
+                    min(1.10, max(float(row.observed_mean_entropy), float(row.null_p95_entropy)) + 0.03),
+                    f"p={float(row.p_null_ge_observed):.3f}",
+                    ha="left",
+                    va="bottom",
+                    fontsize=HEATMAP_TEXT_FONT_SIZE,
+                    rotation=45,
+                    rotation_mode="anchor",
+                )
+
+        ax.set_title(str(subset["class_family_label"].iloc[0]), fontsize=HEATMAP_TITLE_FONT_SIZE)
+        ax.set_ylabel("Normalized class entropy", fontsize=HEATMAP_TEXT_FONT_SIZE)
+        ax.set_ylim(0.0, 1.18)
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
+        ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=HEATMAP_TEXT_FONT_SIZE)
+        ax.tick_params(axis="both", labelsize=HEATMAP_TEXT_FONT_SIZE)
         ax.grid(axis="y", alpha=0.25)
-        ax.legend(loc="upper left", frameon=False)
+        ax.legend(loc="upper left", frameon=False, fontsize=HEATMAP_TEXT_FONT_SIZE)
 
-    fig.suptitle(title, fontsize=13)
+    fig.suptitle(title, fontsize=HEATMAP_TITLE_FONT_SIZE)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
@@ -2448,7 +2645,8 @@ def main() -> int:
             ),
             dpi=args.dpi,
         )
-    for topology in sorted(regime["topology"].dropna().unique()):
+    all_topologies = sorted(regime["topology"].dropna().astype(str).unique())
+    for topology in all_topologies:
         topology_axis_labels = axis_labels_for_topology(
             axis_labels,
             sweep_name=sweep_name,
@@ -2669,6 +2867,34 @@ def main() -> int:
                 / f"{topology}_{direction}_brunel_class_vs_{row_token}.png",
                 dpi=args.dpi,
             )
+
+    if len(all_topologies) > 1:
+        row_token = axis_labels["j_gain"]["token"]
+        col_token = axis_labels["g_gain"]["token"]
+        plot_combined_phase_region_grid(
+            phase_regions,
+            topologies=all_topologies,
+            varying_column="g_gain",
+            fixed_column="j_gain",
+            axis_labels=axis_labels,
+            sweep_name=sweep_name,
+            output_path=figures_dir
+            / "bifurcation_phase_regions"
+            / f"combined_phase_regions_vs_{col_token}.png",
+            dpi=args.dpi,
+        )
+        plot_combined_phase_region_grid(
+            phase_regions,
+            topologies=all_topologies,
+            varying_column="j_gain",
+            fixed_column="g_gain",
+            axis_labels=axis_labels,
+            sweep_name=sweep_name,
+            output_path=figures_dir
+            / "bifurcation_phase_regions"
+            / f"combined_phase_regions_vs_{row_token}.png",
+            dpi=args.dpi,
+        )
 
     save_summary_md(
         output_dir,
