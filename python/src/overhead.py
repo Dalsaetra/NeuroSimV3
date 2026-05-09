@@ -1301,7 +1301,7 @@ class Simulation:
             and float(metrics.get("pop_spec_entropy_norm", np.inf)) < float(oscillatory_entropy_norm_threshold)
         )
         oscillatory = oscillatory or float(metrics.get("psd_peak_ratio", 0.0)) > float(peak_ratio_threshold + 100.0)
-        oscillatory = oscillatory or float(metrics.get("pop_spec_entropy_norm", np.inf)) < float(oscillatory_entropy_norm_threshold - 0.1)
+        oscillatory = oscillatory or float(metrics.get("pop_spec_entropy_norm", np.inf)) < float(oscillatory_entropy_norm_threshold - 0.05)
         bursty_individual = float(metrics.get("Fano_median_300ms", 0.0)) > float(bursty_fano_threshold)
         synchronous = (
             float(metrics.get("mean_noise_corr_50ms", 0.0)) > float(corr_threshold)
@@ -2556,8 +2556,8 @@ class Simulation:
         state_u_range=(0.0, 400.0),
         enable_plasticity=False,
         active_rate_threshold_hz=1.0,
-        strong_peak_ratio_threshold=200.0,
-        strong_entropy_norm_threshold=0.8,
+        strong_peak_ratio_threshold=250.0,
+        strong_entropy_norm_threshold=0.85,
         metadata=None,
         show_progress=True,
     ):
@@ -2671,6 +2671,8 @@ class Simulation:
                 float(scalar_metrics.get("psd_peak_ratio", 0.0)) > float(strong_peak_ratio_threshold)
                 and float(scalar_metrics.get("pop_spec_entropy_norm", np.inf)) < float(strong_entropy_norm_threshold)
             )
+            is_strong = is_strong or float(scalar_metrics.get("psd_peak_ratio", 0.0)) > float(strong_peak_ratio_threshold + 100.0)
+            is_strong = is_strong or float(scalar_metrics.get("pop_spec_entropy_norm", np.inf)) < float(strong_entropy_norm_threshold - 0.05)
 
             row = {
                 **metadata,
